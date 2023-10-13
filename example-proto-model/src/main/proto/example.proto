@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+import "google/protobuf/wrappers.proto";
+
+option java_multiple_files = true;
+option java_package = "com.grpc.benchmark.model";
+option java_outer_classname = "ExampleGrpcModel";
+package com.grpc.benchmark.model.generated;
+
+message ExamplePayload {
+ google.protobuf.Int32Value int_field = 1;
+ google.protobuf.StringValue string_field = 2;
+ google.protobuf.BoolValue bool_field = 3;
+ google.protobuf.DoubleValue double_field = 4;
+ google.protobuf.BytesValue bytes_field = 5;
+ bytes payload = 6;
+}
