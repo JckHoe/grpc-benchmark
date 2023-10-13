@@ -3,7 +3,7 @@ package com.grpc.benchmark.scenario;
 import com.google.protobuf.CodedOutputStream;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.grpc.benchmark.data.PlaceholderData;
-import com.grpc.benchmark.model.ExamplePayload;
+import com.grpc.benchmark.model.ExampleWrapperPayload;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -29,29 +29,29 @@ import java.util.concurrent.TimeUnit;
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 5, time = 1)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
-public class ProtobufBenchMark {
-    private static final Logger logger = LoggerFactory.getLogger(ProtobufBenchMark.class);
+public class ProtoWrapperBenchMark {
+    private static final Logger logger = LoggerFactory.getLogger(ProtoWrapperBenchMark.class);
 
     @State(Scope.Benchmark)
     public static class ExecutionPlan {
-        ExamplePayload payload;
+        ExampleWrapperPayload payload;
         byte[] bytePayload;
 
         @Setup(Level.Trial)
         public void setUp() throws IOException {
-            payload = PlaceholderData.getProtoPayload();
+            payload = PlaceholderData.getWrapperPayload();
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             CodedOutputStream output = CodedOutputStream.newInstance(baos);
-            PlaceholderData.getProtoPayload().writeTo(output);
+            PlaceholderData.getWrapperPayload().writeTo(output);
             output.flush();
             bytePayload = baos.toByteArray();
         }
     }
 
     @Benchmark
-    public ExamplePayload decode(ExecutionPlan plan) throws InvalidProtocolBufferException {
-        return ExamplePayload.parseFrom(plan.bytePayload);
+    public ExampleWrapperPayload decode(ExecutionPlan plan) throws InvalidProtocolBufferException {
+        return ExampleWrapperPayload.parseFrom(plan.bytePayload);
     }
 
     @Benchmark

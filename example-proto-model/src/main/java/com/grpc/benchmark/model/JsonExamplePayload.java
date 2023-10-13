@@ -9,8 +9,6 @@ public class JsonExamplePayload {
     private boolean boolField;
     private double doubleField;
     private byte[] bytesField;
-    private byte[] payload;
-
     // Getters and Setters
 
     public int getIntField() {
@@ -53,11 +51,4 @@ public class JsonExamplePayload {
         this.bytesField = bytesField;
     }
 
-    public byte[] getPayload() {
-        return payload;
-    }
-
-    public void setPayload(byte[] payload) {
-        this.payload = payload;
-    }
 }

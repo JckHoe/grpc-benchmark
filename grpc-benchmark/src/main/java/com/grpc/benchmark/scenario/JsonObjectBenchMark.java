@@ -1,9 +1,7 @@
 package com.grpc.benchmark.scenario;
 
-
 import com.grpc.benchmark.data.PlaceholderData;
-import com.grpc.benchmark.model.JsonExamplePayload;
-import io.vertx.core.json.Json;
+import io.vertx.core.json.JsonObject;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -19,6 +17,7 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
 @Threads(8)
@@ -27,29 +26,28 @@ import java.util.concurrent.TimeUnit;
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 5, time = 1)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
-public class JsonBenchMark {
-    private static final Logger logger = LoggerFactory.getLogger(JsonBenchMark.class);
+public class JsonObjectBenchMark {
+    private static final Logger logger = LoggerFactory.getLogger(JsonObjectBenchMark.class);
 
     @State(Scope.Benchmark)
     public static class ExecutionPlan {
-        JsonExamplePayload payload;
+        JsonObject payload;
         String json;
-
         @Setup(Level.Trial)
-        public void setUp() {
-            payload = PlaceholderData.getJsonPayload();
+        public void setUp() throws IOException {
+            payload = PlaceholderData.getJsonObjectPayload();
 
-            json = Json.encode(payload);
+            json = PlaceholderData.getJsonObjectPayload().encode();
         }
     }
 
     @Benchmark
-    public JsonExamplePayload decode(ExecutionPlan plan){
-        return Json.decodeValue(plan.json, JsonExamplePayload.class);
+    public JsonObject decode(ExecutionPlan plan) {
+        return new JsonObject(plan.json);
     }
 
     @Benchmark
     public String encode(ExecutionPlan plan) {
-        return Json.encode(plan.payload);
+        return plan.payload.encode();
     }
 }

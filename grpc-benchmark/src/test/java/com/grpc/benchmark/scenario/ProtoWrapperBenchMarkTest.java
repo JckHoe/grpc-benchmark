@@ -6,13 +6,13 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-public class ProtobufBenchMarkTest {
-    private ProtobufBenchMark benchMark = new ProtobufBenchMark();
-    private ProtobufBenchMark.ExecutionPlan plan = new ProtobufBenchMark.ExecutionPlan();
+public class ProtoWrapperBenchMarkTest {
+    private ProtoWrapperBenchMark benchMark = new ProtoWrapperBenchMark();
+    private ProtoWrapperBenchMark.ExecutionPlan plan = new ProtoWrapperBenchMark.ExecutionPlan();
 
     @BeforeEach
     void init() throws IOException {
-        plan = new ProtobufBenchMark.ExecutionPlan();
+        plan = new ProtoWrapperBenchMark.ExecutionPlan();
         plan.setUp();
     }
 

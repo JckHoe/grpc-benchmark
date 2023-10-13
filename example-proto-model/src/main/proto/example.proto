@@ -7,11 +7,18 @@ option java_package = "com.grpc.benchmark.model";
 option java_outer_classname = "ExampleGrpcModel";
 package com.grpc.benchmark.model.generated;
 
-message ExamplePayload {
+message ExampleWrapperPayload {
  google.protobuf.Int32Value int_field = 1;
  google.protobuf.StringValue string_field = 2;
  google.protobuf.BoolValue bool_field = 3;
  google.protobuf.DoubleValue double_field = 4;
  google.protobuf.BytesValue bytes_field = 5;
- bytes payload = 6;
+}
+
+message ExamplePayload {
+ int32 int_field = 1;
+ string string_field = 2;
+ bool bool_field = 3;
+ double double_field = 4;
+ bytes bytes_field = 5;
 }
