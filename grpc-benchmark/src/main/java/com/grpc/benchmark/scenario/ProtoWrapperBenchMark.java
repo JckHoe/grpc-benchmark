@@ -56,8 +56,8 @@ public class ProtoWrapperBenchMark {
 
     @Benchmark
     public byte[] encode(ExecutionPlan plan) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        CodedOutputStream output = CodedOutputStream.newInstance(baos);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream(plan.bytePayload.length);
+        CodedOutputStream output = CodedOutputStream.newInstance(baos, plan.bytePayload.length);
         plan.payload.writeTo(output);
         output.flush();
         return baos.toByteArray();
