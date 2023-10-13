@@ -86,3 +86,27 @@ ProtoWrapperBenchMark.decode  avgt    5  0.202 ± 0.005  us/op
 ProtoWrapperBenchMark.encode  avgt    5  1.549 ± 0.112  us/op
 
 ```
+
+## Misc
+
+### Run with Double and Bytes field removed
+```
+# Run complete. Total time: 00:04:06
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+Benchmark                     Mode  Cnt  Score   Error  Units
+JsonBenchMark.decode          avgt    5  0.325 ± 0.014  us/op
+JsonBenchMark.encode          avgt    5  0.240 ± 0.011  us/op
+JsonObjectBenchMark.decode    avgt    5  0.408 ± 0.012  us/op
+JsonObjectBenchMark.encode    avgt    5  0.285 ± 0.012  us/op
+ProtoBenchMark.decode         avgt    5  0.071 ± 0.001  us/op
+ProtoBenchMark.encode         avgt    5  1.482 ± 0.062  us/op
+ProtoWrapperBenchMark.decode  avgt    5  0.132 ± 0.006  us/op
+ProtoWrapperBenchMark.encode  avgt    5  1.508 ± 0.042  us/op
+
+```
