@@ -63,3 +63,8 @@ ProtoWrapperBenchMark.encode        avgt    5  0.133 ± 0.021  us/op
 ProtoWrapperBenchMark.encode:async  avgt         NaN            ---
 
 ```
+
+## Profiling results
+
+![JsonBenchmark Decode](./results/com.grpc.benchmark.scenario.JsonBenchMark.decode-AverageTime/flame-cpu-forward.svg)
+
