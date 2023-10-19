@@ -67,5 +67,5 @@ ProtoWrapperBenchMark.encode:async  avgt         NaN            ---
 ## Profiling results
 
 ### JsonBenchmark Decode
-![Diagram](./results/com.grpc.benchmark.scenario.JsonBenchMark.decode-AverageTime/flame-cpu-forward.html)
+![Diagram](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.JsonBenchMark.decode-AverageTime/flame-cpu-forward.html)
 
