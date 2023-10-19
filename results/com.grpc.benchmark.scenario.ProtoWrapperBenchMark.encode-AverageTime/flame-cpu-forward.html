@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<style>
+	body {margin: 0; padding: 10px; background-color: #ffffff}
+	h1 {margin: 5px 0 0 0; font-size: 18px; font-weight: normal; text-align: center}
+	header {margin: -24px 0 5px 0; line-height: 24px}
+	button {font: 12px sans-serif; cursor: pointer}
+	p {margin: 5px 0 5px 0}
+	a {color: #0366d6}
+	#hl {position: absolute; display: none; overflow: hidden; white-space: nowrap; pointer-events: none; background-color: #ffffe0; outline: 1px solid #ffc000; height: 15px}
+	#hl span {padding: 0 3px 0 3px}
+	#status {overflow: hidden; white-space: nowrap}
+	#match {overflow: hidden; white-space: nowrap; display: none; float: right; text-align: right}
+	#reset {cursor: pointer}
+	#canvas {width: 100%; height: 512px}
+</style>
+</head>
+<body style='font: 12px Verdana, sans-serif'>
+<h1>CPU profile</h1>
+<header style='text-align: left'><button id='reverse' title='Reverse'>&#x1f53b;</button>&nbsp;&nbsp;<button id='search' title='Search'>&#x1f50d;</button></header>
+<header style='text-align: right'>Produced by <a href='https://github.com/jvm-profiling-tools/async-profiler'>async-profiler</a></header>
+<canvas id='canvas'></canvas>
+<div id='hl'><span></span></div>
+<p id='match'>Matched: <span id='matchval'></span> <span id='reset' title='Clear'>&#x274c;</span></p>
+<p id='status'>&nbsp;</p>
+<script>
+	// Copyright 2020 Andrei Pangin
+	// Licensed under the Apache License, Version 2.0.
+	'use strict';
+	var root, rootLevel, px, pattern;
+	var reverse = false;
+	const levels = Array(32);
+	for (let h = 0; h < levels.length; h++) {
+		levels[h] = [];
+	}
+
+	const canvas = document.getElementById('canvas');
+	const c = canvas.getContext('2d');
+	const hl = document.getElementById('hl');
+	const status = document.getElementById('status');
+
+	const canvasWidth = canvas.offsetWidth;
+	const canvasHeight = canvas.offsetHeight;
+	canvas.style.width = canvasWidth + 'px';
+	canvas.width = canvasWidth * (devicePixelRatio || 1);
+	canvas.height = canvasHeight * (devicePixelRatio || 1);
+	if (devicePixelRatio) c.scale(devicePixelRatio, devicePixelRatio);
+	c.font = document.body.style.font;
+
+	const palette = [
+		[0xb2e1b2, 20, 20, 20],
+		[0x50e150, 30, 30, 30],
+		[0x50cccc, 30, 30, 30],
+		[0xe15a5a, 30, 40, 40],
+		[0xc8c83c, 30, 30, 10],
+		[0xe17d00, 30, 30,  0],
+		[0xcce880, 20, 20, 20],
+	];
+
+	function getColor(p) {
+		const v = Math.random();
+		return '#' + (p[0] + ((p[1] * v) << 16 | (p[2] * v) << 8 | (p[3] * v))).toString(16);
+	}
+
+	function f(level, left, width, type, title, inln, c1, int) {
+		levels[level].push({left: left, width: width, color: getColor(palette[type]), title: title,
+			details: (int ? ', int=' + int : '') + (c1 ? ', c1=' + c1 : '') + (inln ? ', inln=' + inln : '')
+		});
+	}
+
+	function samples(n) {
+		return n === 1 ? '1 sample' : n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' samples';
+	}
+
+	function pct(a, b) {
+		return a >= b ? '100' : (100 * a / b).toFixed(2);
+	}
+
+	function findFrame(frames, x) {
+		let left = 0;
+		let right = frames.length - 1;
+
+		while (left <= right) {
+			const mid = (left + right) >>> 1;
+			const f = frames[mid];
+
+			if (f.left > x) {
+				right = mid - 1;
+			} else if (f.left + f.width <= x) {
+				left = mid + 1;
+			} else {
+				return f;
+			}
+		}
+
+		if (frames[left] && (frames[left].left - x) * px < 0.5) return frames[left];
+		if (frames[right] && (x - (frames[right].left + frames[right].width)) * px < 0.5) return frames[right];
+
+		return null;
+	}
+
+	function search(r) {
+		if (r === true && (r = prompt('Enter regexp to search:', '')) === null) {
+			return;
+		}
+
+		pattern = r ? RegExp(r) : undefined;
+		const matched = render(root, rootLevel);
+		document.getElementById('matchval').textContent = pct(matched, root.width) + '%';
+		document.getElementById('match').style.display = r ? 'inherit' : 'none';
+	}
+
+	function render(newRoot, newLevel) {
+		if (root) {
+			c.fillStyle = '#ffffff';
+			c.fillRect(0, 0, canvasWidth, canvasHeight);
+		}
+
+		root = newRoot || levels[0][0];
+		rootLevel = newLevel || 0;
+		px = canvasWidth / root.width;
+
+		const x0 = root.left;
+		const x1 = x0 + root.width;
+		const marked = [];
+
+		function mark(f) {
+			return marked[f.left] >= f.width || (marked[f.left] = f.width);
+		}
+
+		function totalMarked() {
+			let total = 0;
+			let left = 0;
+			Object.keys(marked).sort(function(a, b) { return a - b; }).forEach(function(x) {
+				if (+x >= left) {
+					total += marked[x];
+					left = +x + marked[x];
+				}
+			});
+			return total;
+		}
+
+		function drawFrame(f, y, alpha) {
+			if (f.left < x1 && f.left + f.width > x0) {
+				c.fillStyle = pattern && f.title.match(pattern) && mark(f) ? '#ee00ee' : f.color;
+				c.fillRect((f.left - x0) * px, y, f.width * px, 15);
+
+				if (f.width * px >= 21) {
+					const chars = Math.floor(f.width * px / 7);
+					const title = f.title.length <= chars ? f.title : f.title.substring(0, chars - 2) + '..';
+					c.fillStyle = '#000000';
+					c.fillText(title, Math.max(f.left - x0, 0) * px + 3, y + 12, f.width * px - 6);
+				}
+
+				if (alpha) {
+					c.fillStyle = 'rgba(255, 255, 255, 0.5)';
+					c.fillRect((f.left - x0) * px, y, f.width * px, 15);
+				}
+			}
+		}
+
+		for (let h = 0; h < levels.length; h++) {
+			const y = reverse ? h * 16 : canvasHeight - (h + 1) * 16;
+			const frames = levels[h];
+			for (let i = 0; i < frames.length; i++) {
+				drawFrame(frames[i], y, h < rootLevel);
+			}
+		}
+
+		return totalMarked();
+	}
+
+	canvas.onmousemove = function() {
+		const h = Math.floor((reverse ? event.offsetY : (canvasHeight - event.offsetY)) / 16);
+		if (h >= 0 && h < levels.length) {
+			const f = findFrame(levels[h], event.offsetX / px + root.left);
+			if (f) {
+				if (f != root) getSelection().removeAllRanges();
+				hl.style.left = (Math.max(f.left - root.left, 0) * px + canvas.offsetLeft) + 'px';
+				hl.style.width = (Math.min(f.width, root.width) * px) + 'px';
+				hl.style.top = ((reverse ? h * 16 : canvasHeight - (h + 1) * 16) + canvas.offsetTop) + 'px';
+				hl.firstChild.textContent = f.title;
+				hl.style.display = 'block';
+				canvas.title = f.title + '\n(' + samples(f.width) + f.details + ', ' + pct(f.width, levels[0][0].width) + '%)';
+				canvas.style.cursor = 'pointer';
+				canvas.onclick = function() {
+					if (f != root) {
+						render(f, h);
+						canvas.onmousemove();
+					}
+				};
+				status.textContent = 'Function: ' + canvas.title;
+				return;
+			}
+		}
+		canvas.onmouseout();
+	}
+
+	canvas.onmouseout = function() {
+		hl.style.display = 'none';
+		status.textContent = '\xa0';
+		canvas.title = '';
+		canvas.style.cursor = '';
+		canvas.onclick = '';
+	}
+
+	canvas.ondblclick = function() {
+		getSelection().selectAllChildren(hl);
+	}
+
+	document.getElementById('reverse').onclick = function() {
+		reverse = !reverse;
+		render();
+	}
+
+	document.getElementById('search').onclick = function() {
+		search(true);
+	}
+
+	document.getElementById('reset').onclick = function() {
+		search(false);
+	}
+
+	window.onkeydown = function() {
+		if (event.ctrlKey && event.keyCode === 70) {
+			event.preventDefault();
+			search(true);
+		} else if (event.keyCode === 27) {
+			search(false);
+		}
+	}
+
+f(0,0,3190,3,'all')
+f(1,0,1,3,'[not_walkable_Java]')
+f(2,0,1,3,'Interpreter')
+f(1,1,3,3,'[unknown_Java]')
+f(2,1,3,3,'SafepointBlob')
+f(3,1,1,3,'[unknown]')
+f(4,1,1,3,'__restore_rt')
+f(5,1,1,4,'os::Posix::ucontext_get_pc(ucontext_t const*)')
+f(3,2,1,3,'__restore_rt')
+f(3,3,1,5,'asm_exc_page_fault')
+f(4,3,1,5,'exc_page_fault')
+f(5,3,1,5,'do_user_addr_fault')
+f(6,3,1,5,'vmacache_find')
+f(1,4,1,3,'__GI___clock_gettime')
+f(2,4,1,3,'__vdso_clock_gettime')
+f(1,5,1,3,'_int_malloc')
+f(1,6,3175,1,'java/lang/Thread.run')
+f(2,6,3175,1,'java/util/concurrent/ThreadPoolExecutor$Worker.run')
+f(3,6,3175,1,'java/util/concurrent/ThreadPoolExecutor.runWorker')
+f(4,6,3175,1,'java/util/concurrent/FutureTask.run')
+f(5,6,3175,1,'java/util/concurrent/Executors$RunnableAdapter.call')
+f(6,6,3175,1,'java/util/concurrent/FutureTask.run')
+f(7,6,3175,1,'org/openjdk/jmh/runner/BenchmarkHandler$BenchmarkTask.call')
+f(8,6,3175,1,'org/openjdk/jmh/runner/BenchmarkHandler$BenchmarkTask.call')
+f(9,6,3175,1,'java/lang/reflect/Method.invoke')
+f(10,6,3175,1,'jdk/internal/reflect/DelegatingMethodAccessorImpl.invoke')
+f(11,6,3175,1,'jdk/internal/reflect/GeneratedMethodAccessor1.invoke')
+f(12,6,3175,1,'com/grpc/benchmark/scenario/jmh_generated/ProtoWrapperBenchMark_encode_jmhTest.encode_AverageTime')
+f(13,7,21,2,'com/grpc/benchmark/scenario/ProtoWrapperBenchMark.encode',11,0,0)
+f(14,8,1,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flush',1,0,0)
+f(15,8,1,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.doFlush',1,0,0)
+f(16,8,1,2,'java/io/ByteArrayOutputStream.write',1,0,0)
+f(14,9,1,2,'com/google/protobuf/CodedOutputStream.newInstance',1,0,0)
+f(15,9,1,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.<init>',1,0,0)
+f(16,9,1,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.<init>',1,0,0)
+f(14,10,10,1,'com/grpc/benchmark/model/ExampleWrapperPayload.writeTo')
+f(15,10,10,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeMessage',6,0,0)
+f(16,10,10,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeMessageNoTag',6,0,0)
+f(17,10,3,2,'com/google/protobuf/BytesValue.writeTo',1,0,0)
+f(18,10,2,1,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeBytes')
+f(19,10,2,1,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeBytesNoTag')
+f(20,10,2,1,'com/google/protobuf/ByteString$LiteralByteString.writeTo')
+f(21,10,2,1,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeLazy')
+f(22,10,2,1,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.write')
+f(23,10,2,3,'jbyte_disjoint_arraycopy')
+f(18,12,1,2,'com/google/protobuf/UnknownFieldSet.writeTo',1,0,0)
+f(17,13,3,2,'com/google/protobuf/DoubleValue.writeTo',3,0,0)
+f(18,13,3,2,'com/google/protobuf/CodedOutputStream.writeDouble',3,0,0)
+f(19,13,3,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeFixed64',3,0,0)
+f(20,13,3,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferFixed64NoTag',3,0,0)
+f(17,16,1,2,'com/google/protobuf/StringValue.getSerializedSize',1,0,0)
+f(17,17,3,2,'com/google/protobuf/StringValue.writeTo',1,0,0)
+f(18,17,3,2,'com/google/protobuf/GeneratedMessageV3.writeString',1,0,0)
+f(19,17,3,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeString',1,0,0)
+f(20,17,3,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeStringNoTag',1,0,0)
+f(21,18,2,1,'com/google/protobuf/Utf8.encode')
+f(22,18,2,1,'com/google/protobuf/Utf8$UnsafeProcessor.encodeUtf8')
+f(23,19,1,5,'asm_sysvec_call_function_single')
+f(24,19,1,5,'sysvec_call_function_single')
+f(25,19,1,5,'irqentry_exit')
+f(26,19,1,5,'irqentry_exit_to_user_mode')
+f(27,19,1,5,'exit_to_user_mode_prepare')
+f(14,20,3,2,'java/io/ByteArrayOutputStream.<init>',3,0,0)
+f(14,23,5,2,'java/io/ByteArrayOutputStream.toByteArray',5,0,0)
+f(13,28,1,0,'com/grpc/benchmark/scenario/jmh_generated/ProtoWrapperBenchMark_encode_jmhTest._jmh_tryInit_f_protowrapperbenchmark0_0',0,0,1)
+f(13,29,3152,1,'com/grpc/benchmark/scenario/jmh_generated/ProtoWrapperBenchMark_encode_jmhTest.encode_avgt_jmhStub')
+f(14,474,1,4,'SafepointSynchronize::handle_polling_page_exception(JavaThread*)')
+f(14,475,1,5,'asm_sysvec_apic_timer_interrupt')
+f(15,475,1,5,'sysvec_apic_timer_interrupt')
+f(16,475,1,5,'irq_exit_rcu')
+f(17,475,1,5,'__softirqentry_text_start')
+f(14,476,8,5,'asm_sysvec_call_function_single')
+f(15,476,8,5,'sysvec_call_function_single')
+f(16,476,8,5,'irqentry_exit')
+f(17,476,8,5,'irqentry_exit_to_user_mode')
+f(18,476,8,5,'exit_to_user_mode_prepare')
+f(14,484,2697,2,'com/grpc/benchmark/scenario/ProtoWrapperBenchMark.encode',1186,0,0)
+f(15,507,465,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flush',427,0,0)
+f(16,509,1,4,'ThreadSafepointState::handle_polling_page_exception()')
+f(17,509,1,4,'SafepointMechanism::process(JavaThread*, bool)')
+f(18,509,1,4,'SafepointSynchronize::block(JavaThread*)')
+f(19,509,1,3,'__errno_location')
+f(16,510,462,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.doFlush',425,0,0)
+f(17,520,1,5,'asm_sysvec_call_function_single')
+f(18,520,1,5,'sysvec_call_function_single')
+f(19,520,1,5,'irqentry_exit')
+f(20,520,1,5,'irqentry_exit_to_user_mode')
+f(21,520,1,5,'exit_to_user_mode_prepare')
+f(17,521,451,2,'java/io/ByteArrayOutputStream.write',414,0,0)
+f(18,932,2,5,'asm_sysvec_call_function_single')
+f(19,932,2,5,'sysvec_call_function_single')
+f(20,932,2,5,'irqentry_exit')
+f(21,932,2,5,'irqentry_exit_to_user_mode')
+f(22,932,2,5,'exit_to_user_mode_prepare')
+f(18,934,1,2,'java/io/ByteArrayOutputStream.ensureCapacity',1,0,0)
+f(18,935,3,3,'jbyte_arraycopy')
+f(18,938,34,3,'jbyte_disjoint_arraycopy')
+f(19,971,1,5,'asm_sysvec_call_function_single')
+f(20,971,1,5,'sysvec_call_function_single')
+f(21,971,1,5,'irqentry_exit')
+f(22,971,1,5,'irqentry_exit_to_user_mode')
+f(23,971,1,5,'exit_to_user_mode_prepare')
+f(15,972,125,2,'com/google/protobuf/CodedOutputStream.newInstance',110,0,0)
+f(16,983,1,4,'OptoRuntime::new_instance_C(Klass*, JavaThread*)')
+f(17,983,1,4,'InstanceKlass::allocate_instance(JavaThread*)')
+f(18,983,1,4,'MemAllocator::allocate() const')
+f(19,983,1,4,'MemAllocator::allocate_inside_tlab_slow(MemAllocator::Allocation&) const')
+f(20,983,1,4,'G1CollectedHeap::allocate_new_tlab(unsigned long, unsigned long, unsigned long*)')
+f(21,983,1,4,'G1CollectedHeap::attempt_allocation_slow(unsigned long)')
+f(22,983,1,4,'VMThread::execute(VM_Operation*)')
+f(23,983,1,4,'VMThread::wait_until_executed(VM_Operation*)')
+f(24,983,1,4,'Monitor::wait(long)')
+f(16,984,113,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.<init>',99,0,0)
+f(17,984,113,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.<init>',99,0,0)
+f(18,1081,12,4,'OptoRuntime::new_array_nozero_C(Klass*, int, JavaThread*)')
+f(19,1082,4,4,'OptoRuntime::is_deoptimized_caller_frame(JavaThread*)')
+f(20,1082,1,4,'JavaThread::pd_last_frame()')
+f(21,1082,1,4,'CodeBlob::is_zombie() const')
+f(20,1083,3,4,'frame::sender(RegisterMap*) const')
+f(21,1083,3,4,'frame::sender_for_compiled_frame(RegisterMap*) const')
+f(22,1084,2,4,'OopMapSet::update_register_map(frame const*, RegisterMap*)')
+f(23,1084,2,4,'ImmutableOopMapSet::find_map_at_offset(int) const')
+f(19,1086,7,4,'TypeArrayKlass::allocate_common(int, bool, JavaThread*)')
+f(20,1086,7,4,'MemAllocator::allocate() const')
+f(21,1086,1,4,'AllocTracer::send_allocation_in_new_tlab(Klass*, HeapWordImpl**, unsigned long, unsigned long, JavaThread*)')
+f(22,1086,1,4,'JfrObjectAllocationSample::send_event(Klass const*, unsigned long, bool, Thread*)')
+f(21,1087,4,4,'MemAllocator::allocate_inside_tlab_slow(MemAllocator::Allocation&) const')
+f(22,1087,3,4,'G1CollectedHeap::allocate_new_tlab(unsigned long, unsigned long, unsigned long*)')
+f(23,1088,2,4,'G1CollectedHeap::attempt_allocation_slow(unsigned long)')
+f(24,1089,1,4,'G1Policy::preventive_collection_required(unsigned int)')
+f(22,1090,1,3,'__memset_avx2_unaligned_erms')
+f(21,1091,2,4,'ObjArrayAllocator::initialize(HeapWordImpl**) const')
+f(18,1093,2,3,'[unknown]')
+f(19,1093,2,3,'__GI___pthread_mutex_trylock')
+f(18,1095,2,5,'asm_sysvec_call_function_single')
+f(19,1095,2,5,'sysvec_call_function_single')
+f(20,1095,2,5,'irqentry_exit')
+f(21,1095,2,5,'irqentry_exit_to_user_mode')
+f(22,1095,2,5,'exit_to_user_mode_prepare')
+f(15,1097,1409,1,'com/grpc/benchmark/model/ExampleWrapperPayload.writeTo')
+f(16,1114,1392,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeMessage',1164,0,0)
+f(17,1114,1254,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeMessageNoTag',1026,0,0)
+f(18,1114,29,2,'com/google/protobuf/BoolValue.writeTo',29,0,0)
+f(19,1114,2,2,'com/google/protobuf/BoolValue.getUnknownFields',2,0,0)
+f(19,1116,17,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeBool',17,0,0)
+f(20,1116,11,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.buffer',11,0,0)
+f(20,1127,5,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferTag',5,0,0)
+f(21,1127,5,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',5,0,0)
+f(22,1131,1,5,'asm_sysvec_apic_timer_interrupt')
+f(23,1131,1,5,'sysvec_apic_timer_interrupt')
+f(24,1131,1,5,'irqentry_exit')
+f(25,1131,1,5,'irqentry_exit_to_user_mode')
+f(26,1131,1,5,'exit_to_user_mode_prepare')
+f(27,1131,1,5,'schedule')
+f(28,1131,1,5,'__sched_text_start')
+f(29,1131,1,5,'finish_task_switch')
+f(20,1132,1,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',1,0,0)
+f(19,1133,10,2,'com/google/protobuf/UnknownFieldSet.writeTo',10,0,0)
+f(20,1140,2,2,'java/util/TreeMap$EntrySet.iterator',2,0,0)
+f(21,1140,1,2,'java/util/TreeMap$EntryIterator.<init>',1,0,0)
+f(21,1141,1,2,'java/util/TreeMap.getFirstEntry',1,0,0)
+f(20,1142,1,2,'java/util/TreeMap.entrySet',1,0,0)
+f(18,1143,3,2,'com/google/protobuf/BytesValue.getSerializedSize',3,0,0)
+f(18,1146,402,2,'com/google/protobuf/BytesValue.writeTo',341,0,0)
+f(19,1148,15,2,'com/google/protobuf/ByteString.isEmpty',15,0,0)
+f(20,1161,2,2,'com/google/protobuf/ByteString$LiteralByteString.size',2,0,0)
+f(19,1163,1,2,'com/google/protobuf/BytesValue.getUnknownFields',1,0,0)
+f(19,1164,343,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeBytes',282,0,0)
+f(20,1164,241,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeBytesNoTag',180,0,0)
+f(21,1164,125,2,'com/google/protobuf/ByteString$LiteralByteString.writeTo',64,0,0)
+f(22,1164,125,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeLazy',64,0,0)
+f(23,1164,125,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.write',64,0,0)
+f(24,1227,1,5,'asm_sysvec_call_function_single')
+f(25,1227,1,5,'sysvec_call_function_single')
+f(26,1227,1,5,'irqentry_exit')
+f(27,1227,1,5,'irqentry_exit_to_user_mode')
+f(28,1227,1,5,'exit_to_user_mode_prepare')
+f(24,1228,11,3,'jbyte_arraycopy')
+f(24,1239,50,3,'jbyte_disjoint_arraycopy')
+f(21,1289,116,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeUInt32NoTag',116,0,0)
+f(22,1289,101,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',101,0,0)
+f(23,1379,2,5,'asm_sysvec_call_function_single')
+f(24,1379,2,5,'sysvec_call_function_single')
+f(25,1379,2,5,'irqentry_exit')
+f(26,1379,2,5,'irqentry_exit_to_user_mode')
+f(27,1379,2,5,'exit_to_user_mode_prepare')
+f(23,1381,9,2,'com/google/protobuf/UnsafeUtil.putByte',9,0,0)
+f(24,1381,9,2,'com/google/protobuf/UnsafeUtil$JvmMemoryAccessor.putByte',9,0,0)
+f(25,1381,9,2,'sun/misc/Unsafe.putByte',9,0,0)
+f(22,1390,15,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',15,0,0)
+f(20,1405,102,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeTag',102,0,0)
+f(21,1405,102,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeUInt32NoTag',102,0,0)
+f(22,1405,80,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',80,0,0)
+f(23,1482,1,5,'asm_sysvec_call_function_single')
+f(24,1482,1,5,'sysvec_call_function_single')
+f(25,1482,1,5,'irqentry_exit')
+f(26,1482,1,5,'irqentry_exit_to_user_mode')
+f(27,1482,1,5,'exit_to_user_mode_prepare')
+f(23,1483,2,2,'com/google/protobuf/UnsafeUtil.putByte',2,0,0)
+f(24,1483,2,2,'com/google/protobuf/UnsafeUtil$JvmMemoryAccessor.putByte',2,0,0)
+f(25,1483,2,2,'sun/misc/Unsafe.putByte',2,0,0)
+f(22,1485,22,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',22,0,0)
+f(19,1507,41,2,'com/google/protobuf/UnknownFieldSet.writeTo',41,0,0)
+f(20,1525,18,2,'java/util/TreeMap$EntrySet.iterator',18,0,0)
+f(21,1529,1,2,'java/util/TreeMap$EntryIterator.<init>',1,0,0)
+f(21,1530,13,2,'java/util/TreeMap.getFirstEntry',13,0,0)
+f(20,1543,5,2,'java/util/TreeMap.entrySet',5,0,0)
+f(18,1548,93,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeUInt32NoTag',93,0,0)
+f(19,1548,72,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',72,0,0)
+f(20,1614,6,2,'com/google/protobuf/UnsafeUtil.putByte',6,0,0)
+f(21,1614,6,2,'com/google/protobuf/UnsafeUtil$JvmMemoryAccessor.putByte',6,0,0)
+f(22,1614,6,2,'sun/misc/Unsafe.putByte',6,0,0)
+f(19,1620,21,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',21,0,0)
+f(20,1640,1,5,'asm_sysvec_call_function_single')
+f(21,1640,1,5,'sysvec_call_function_single')
+f(22,1640,1,5,'irqentry_exit')
+f(23,1640,1,5,'irqentry_exit_to_user_mode')
+f(24,1640,1,5,'exit_to_user_mode_prepare')
+f(18,1641,4,2,'com/google/protobuf/DoubleValue.getSerializedSize',4,0,0)
+f(18,1645,375,2,'com/google/protobuf/DoubleValue.writeTo',375,0,0)
+f(19,1647,356,2,'com/google/protobuf/CodedOutputStream.writeDouble',356,0,0)
+f(20,1647,356,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeFixed64',356,0,0)
+f(21,1647,272,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferFixed64NoTag',272,0,0)
+f(22,1915,4,5,'asm_sysvec_call_function_single')
+f(23,1915,4,5,'sysvec_call_function_single')
+f(24,1915,4,5,'irqentry_exit')
+f(25,1915,4,5,'irqentry_exit_to_user_mode')
+f(26,1915,4,5,'exit_to_user_mode_prepare')
+f(27,1918,1,5,'schedule')
+f(28,1918,1,5,'__sched_text_start')
+f(29,1918,1,5,'finish_task_switch')
+f(21,1919,82,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferTag',82,0,0)
+f(22,1919,82,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',82,0,0)
+f(23,1956,45,2,'com/google/protobuf/UnsafeUtil.putByte',45,0,0)
+f(24,1956,45,2,'com/google/protobuf/UnsafeUtil$JvmMemoryAccessor.putByte',45,0,0)
+f(25,1956,45,2,'sun/misc/Unsafe.putByte',45,0,0)
+f(21,2001,2,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',2,0,0)
+f(19,2003,5,2,'com/google/protobuf/DoubleValue.getUnknownFields',5,0,0)
+f(19,2008,12,2,'com/google/protobuf/UnknownFieldSet.writeTo',12,0,0)
+f(20,2015,2,2,'java/util/TreeMap$EntrySet.iterator',2,0,0)
+f(21,2016,1,2,'java/util/TreeMap$EntryIterator.<init>',1,0,0)
+f(20,2017,3,2,'java/util/TreeMap.entrySet',3,0,0)
+f(18,2020,52,2,'com/google/protobuf/Int32Value.writeTo',52,0,0)
+f(19,2022,37,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeInt32',37,0,0)
+f(20,2022,27,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferInt32NoTag',27,0,0)
+f(21,2024,25,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',25,0,0)
+f(22,2048,1,5,'asm_sysvec_apic_timer_interrupt')
+f(23,2048,1,5,'sysvec_apic_timer_interrupt')
+f(24,2048,1,5,'irqentry_exit')
+f(25,2048,1,5,'irqentry_exit_to_user_mode')
+f(26,2048,1,5,'exit_to_user_mode_prepare')
+f(27,2048,1,5,'schedule')
+f(28,2048,1,5,'__sched_text_start')
+f(29,2048,1,5,'finish_task_switch')
+f(20,2049,9,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferTag',9,0,0)
+f(21,2049,9,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',9,0,0)
+f(20,2058,1,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',1,0,0)
+f(19,2059,1,2,'com/google/protobuf/Int32Value.getUnknownFields',1,0,0)
+f(19,2060,12,2,'com/google/protobuf/UnknownFieldSet.writeTo',12,0,0)
+f(20,2062,1,5,'asm_sysvec_call_function_single')
+f(21,2062,1,5,'sysvec_call_function_single')
+f(22,2062,1,5,'irqentry_exit')
+f(23,2062,1,5,'irqentry_exit_to_user_mode')
+f(24,2062,1,5,'exit_to_user_mode_prepare')
+f(20,2063,4,2,'java/util/TreeMap$EntrySet.iterator',4,0,0)
+f(21,2063,4,2,'java/util/TreeMap.getFirstEntry',4,0,0)
+f(20,2067,5,2,'java/util/TreeMap.entrySet',5,0,0)
+f(18,2072,8,2,'com/google/protobuf/StringValue.getSerializedSize',8,0,0)
+f(18,2080,288,2,'com/google/protobuf/StringValue.writeTo',121,0,0)
+f(19,2080,10,2,'com/google/protobuf/GeneratedMessageV3.isStringEmpty',10,0,0)
+f(20,2088,2,2,'java/lang/String.isEmpty',2,0,0)
+f(19,2090,268,2,'com/google/protobuf/GeneratedMessageV3.writeString',101,0,0)
+f(20,2097,261,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeString',94,0,0)
+f(21,2097,237,1,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeStringNoTag',70,0,0)
+f(22,2130,25,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',25,0,0)
+f(23,2145,1,5,'asm_sysvec_call_function_single')
+f(24,2145,1,5,'sysvec_call_function_single')
+f(25,2145,1,5,'irqentry_exit')
+f(26,2145,1,5,'irqentry_exit_to_user_mode')
+f(27,2145,1,5,'exit_to_user_mode_prepare')
+f(23,2146,9,2,'com/google/protobuf/UnsafeUtil.putByte',9,0,0)
+f(24,2146,9,2,'com/google/protobuf/UnsafeUtil$JvmMemoryAccessor.putByte',9,0,0)
+f(25,2146,9,2,'sun/misc/Unsafe.putByte',9,0,0)
+f(22,2155,176,1,'com/google/protobuf/Utf8.encode',9,0,0)
+f(23,2164,167,1,'com/google/protobuf/Utf8$UnsafeProcessor.encodeUtf8')
+f(24,2275,1,4,'ThreadSafepointState::handle_polling_page_exception()')
+f(25,2275,1,4,'frame::sender(RegisterMap*) const')
+f(26,2275,1,4,'frame::sender_for_compiled_frame(RegisterMap*) const')
+f(27,2275,1,4,'OopMapSet::update_register_map(frame const*, RegisterMap*)')
+f(24,2276,3,5,'asm_sysvec_call_function_single')
+f(25,2276,3,5,'sysvec_call_function_single')
+f(26,2276,3,5,'irqentry_exit')
+f(27,2276,3,5,'irqentry_exit_to_user_mode')
+f(28,2276,3,5,'exit_to_user_mode_prepare')
+f(24,2279,49,2,'java/lang/String.charAt',49,0,0)
+f(25,2279,49,2,'java/lang/StringLatin1.charAt',49,0,0)
+f(24,2328,3,2,'java/lang/String.length',3,0,0)
+f(22,2331,3,2,'java/lang/String.length',3,0,0)
+f(21,2334,24,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeTag',24,0,0)
+f(22,2334,24,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeUInt32NoTag',24,0,0)
+f(23,2334,22,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',22,0,0)
+f(24,2339,17,2,'com/google/protobuf/UnsafeUtil.putByte',17,0,0)
+f(25,2340,16,2,'com/google/protobuf/UnsafeUtil$JvmMemoryAccessor.putByte',16,0,0)
+f(26,2348,8,2,'sun/misc/Unsafe.putByte',8,0,0)
+f(23,2356,2,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',2,0,0)
+f(19,2358,10,2,'com/google/protobuf/UnknownFieldSet.writeTo',10,0,0)
+f(20,2364,3,2,'java/util/TreeMap$EntrySet.iterator',3,0,0)
+f(21,2365,2,2,'java/util/TreeMap.getFirstEntry',2,0,0)
+f(20,2367,1,2,'java/util/TreeMap.entrySet',1,0,0)
+f(17,2368,138,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeTag',138,0,0)
+f(18,2368,138,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.writeUInt32NoTag',138,0,0)
+f(19,2368,114,2,'com/google/protobuf/CodedOutputStream$AbstractBufferedEncoder.bufferUInt32NoTag',114,0,0)
+f(20,2469,2,5,'asm_sysvec_call_function_single')
+f(21,2469,2,5,'sysvec_call_function_single')
+f(22,2469,2,5,'irqentry_exit')
+f(23,2469,2,5,'irqentry_exit_to_user_mode')
+f(24,2469,2,5,'exit_to_user_mode_prepare')
+f(20,2471,11,2,'com/google/protobuf/UnsafeUtil.putByte',11,0,0)
+f(21,2472,10,2,'com/google/protobuf/UnsafeUtil$JvmMemoryAccessor.putByte',10,0,0)
+f(22,2473,9,2,'sun/misc/Unsafe.putByte',9,0,0)
+f(19,2482,24,2,'com/google/protobuf/CodedOutputStream$OutputStreamEncoder.flushIfNotAvailable',24,0,0)
+f(20,2504,2,5,'asm_sysvec_call_function_single')
+f(21,2504,2,5,'sysvec_call_function_single')
+f(22,2504,2,5,'irqentry_exit')
+f(23,2504,2,5,'irqentry_exit_to_user_mode')
+f(24,2504,2,5,'exit_to_user_mode_prepare')
+f(15,2506,236,2,'java/io/ByteArrayOutputStream.<init>',226,0,0)
+f(16,2728,10,4,'OptoRuntime::new_array_C(Klass*, int, JavaThread*)')
+f(17,2729,9,4,'TypeArrayKlass::allocate_common(int, bool, JavaThread*)')
+f(18,2729,9,4,'MemAllocator::allocate() const')
+f(19,2729,4,4,'MemAllocator::allocate_inside_tlab_slow(MemAllocator::Allocation&) const')
+f(20,2729,2,4,'G1CollectedHeap::allocate_new_tlab(unsigned long, unsigned long, unsigned long*)')
+f(21,2729,2,4,'G1CollectedHeap::attempt_allocation_slow(unsigned long)')
+f(22,2729,1,4,'G1SurvivorRegions::length() const')
+f(22,2730,1,4,'Mutex::lock()')
+f(23,2730,1,3,'__lll_lock_wait')
+f(24,2730,1,5,'entry_SYSCALL_64_after_hwframe')
+f(25,2730,1,5,'do_syscall_64')
+f(26,2730,1,5,'__x64_sys_futex')
+f(27,2730,1,5,'do_futex')
+f(28,2730,1,5,'futex_wait')
+f(29,2730,1,5,'futex_wait_queue_me')
+f(30,2730,1,5,'schedule')
+f(31,2730,1,5,'__sched_text_start')
+f(20,2731,2,4,'ThreadLocalAllocBuffer::fill(HeapWordImpl**, HeapWordImpl**, unsigned long)')
+f(19,2733,5,4,'ObjArrayAllocator::initialize(HeapWordImpl**) const')
+f(16,2738,2,5,'asm_sysvec_apic_timer_interrupt')
+f(17,2738,2,5,'sysvec_apic_timer_interrupt')
+f(18,2738,1,5,'irq_exit_rcu')
+f(19,2738,1,5,'__softirqentry_text_start')
+f(18,2739,1,5,'irqentry_exit')
+f(19,2739,1,5,'irqentry_exit_to_user_mode')
+f(20,2739,1,5,'exit_to_user_mode_prepare')
+f(16,2740,2,5,'asm_sysvec_call_function_single')
+f(17,2740,2,5,'sysvec_call_function_single')
+f(18,2740,2,5,'irqentry_exit')
+f(19,2740,2,5,'irqentry_exit_to_user_mode')
+f(20,2740,2,5,'exit_to_user_mode_prepare')
+f(15,2742,439,2,'java/io/ByteArrayOutputStream.toByteArray',400,0,0)
+f(16,3125,1,5,'asm_sysvec_apic_timer_interrupt')
+f(17,3125,1,5,'sysvec_apic_timer_interrupt')
+f(18,3125,1,5,'irq_exit_rcu')
+f(19,3125,1,5,'__softirqentry_text_start')
+f(16,3126,3,5,'asm_sysvec_call_function_single')
+f(17,3126,3,5,'sysvec_call_function_single')
+f(18,3126,3,5,'irqentry_exit')
+f(19,3126,3,5,'irqentry_exit_to_user_mode')
+f(20,3126,3,5,'exit_to_user_mode_prepare')
+f(21,3128,1,5,'schedule')
+f(22,3128,1,5,'__sched_text_start')
+f(23,3128,1,5,'finish_task_switch')
+f(16,3129,13,2,'java/util/Arrays.copyOf',13,0,0)
+f(16,3142,39,3,'jlong_disjoint_arraycopy')
+f(17,3179,2,5,'asm_sysvec_call_function_single')
+f(18,3179,2,5,'sysvec_call_function_single')
+f(19,3179,2,5,'irqentry_exit')
+f(20,3179,2,5,'irqentry_exit_to_user_mode')
+f(21,3179,2,5,'exit_to_user_mode_prepare')
+f(1,3181,9,3,'start_thread')
+f(2,3181,9,3,'thread_native_entry(Thread*)')
+f(3,3181,9,4,'Thread::call_run()')
+f(4,3181,6,4,'GangWorker::run()')
+f(5,3181,6,4,'GangWorker::loop()')
+f(6,3181,2,4,'G1BatchedGangTask::work(unsigned int)')
+f(7,3181,1,4,'G1PostEvacuateCollectionSetCleanupTask2::FreeCollectionSetTask::do_work(unsigned int)')
+f(8,3181,1,4,'G1CollectionSet::par_iterate(HeapRegionClosure*, HeapRegionClaimer*, unsigned int, unsigned int) const')
+f(9,3181,1,4,'G1CollectionSet::iterate_part_from(HeapRegionClosure*, HeapRegionClaimer*, unsigned long, unsigned long, unsigned int, unsigned int) const [clone .part.0]')
+f(10,3181,1,4,'FreeCSetClosure::do_heap_region(HeapRegion*)')
+f(7,3182,1,4,'G1RemSetScanState::G1ClearCardTableTask::do_work(unsigned int)')
+f(8,3182,1,3,'__memset_avx2_unaligned_erms')
+f(6,3183,3,4,'G1EvacuateRegionsBaseTask::work(unsigned int)')
+f(7,3183,2,4,'G1EvacuateRegionsTask::evacuate_live_objects(G1ParScanThreadState*, unsigned int)')
+f(8,3183,2,4,'G1ParEvacuateFollowersClosure::do_void()')
+f(9,3183,2,3,'SpinPause')
+f(7,3185,1,4,'G1EvacuateRegionsTask::scan_roots(G1ParScanThreadState*, unsigned int)')
+f(8,3185,1,4,'G1RemSet::scan_heap_roots(G1ParScanThreadState*, unsigned int, G1GCPhaseTimes::GCParPhases, G1GCPhaseTimes::GCParPhases, bool)')
+f(9,3185,1,4,'void OopOopIterateDispatch<G1ScanCardClosure>::Table::oop_oop_iterate<InstanceKlass, narrowOop>(G1ScanCardClosure*, oopDesc*, Klass*)')
+f(6,3186,1,3,'sem_post@@GLIBC_2.2.5')
+f(7,3186,1,5,'entry_SYSCALL_64_after_hwframe')
+f(8,3186,1,5,'do_syscall_64')
+f(9,3186,1,5,'__x64_sys_futex')
+f(10,3186,1,5,'do_futex')
+f(11,3186,1,5,'futex_wake')
+f(12,3186,1,5,'wake_up_q')
+f(13,3186,1,5,'try_to_wake_up')
+f(14,3186,1,5,'__lock_text_start')
+f(4,3187,3,4,'VMThread::run()')
+f(5,3187,3,4,'VMThread::inner_execute(VM_Operation*)')
+f(6,3187,2,4,'SafepointSynchronize::begin()')
+f(7,3187,2,4,'SafepointSynchronize::do_cleanup_tasks()')
+f(8,3187,2,4,'WorkGang::run_task(AbstractGangTask*, unsigned int, bool)')
+f(9,3187,2,3,'sem_post@@GLIBC_2.2.5')
+f(10,3187,2,5,'entry_SYSCALL_64_after_hwframe')
+f(11,3187,2,5,'do_syscall_64')
+f(12,3187,2,5,'__x64_sys_futex')
+f(13,3187,2,5,'do_futex')
+f(14,3187,2,5,'futex_wake')
+f(15,3187,2,5,'wake_up_q')
+f(16,3187,2,5,'try_to_wake_up')
+f(17,3187,2,5,'__lock_text_start')
+f(6,3189,1,4,'VMThread::evaluate_operation(VM_Operation*)')
+f(7,3189,1,4,'VM_Operation::evaluate()')
+f(8,3189,1,4,'VM_G1CollectForAllocation::doit()')
+f(9,3189,1,4,'G1CollectedHeap::do_collection_pause_at_safepoint(double)')
+f(10,3189,1,4,'G1CollectedHeap::do_collection_pause_at_safepoint_helper(double)')
+f(11,3189,1,4,'G1CollectedHeap::post_evacuate_collection_set(G1EvacuationInfo&, G1RedirtyCardsQueueSet*, G1ParScanThreadStateSet*)')
+f(12,3189,1,4,'G1CollectedHeap::post_evacuate_cleanup_1(G1ParScanThreadStateSet*, G1RedirtyCardsQueueSet*)')
+f(13,3189,1,4,'WorkGang::run_task(AbstractGangTask*, unsigned int, bool)')
+f(14,3189,1,3,'sem_post@@GLIBC_2.2.5')
+f(15,3189,1,5,'entry_SYSCALL_64_after_hwframe')
+f(16,3189,1,5,'do_syscall_64')
+f(17,3189,1,5,'__x64_sys_futex')
+f(18,3189,1,5,'do_futex')
+f(19,3189,1,5,'futex_wake')
+f(20,3189,1,5,'wake_up_q')
+f(21,3189,1,5,'try_to_wake_up')
+f(22,3189,1,5,'__lock_text_start')
+
+search();
+</script></body></html>

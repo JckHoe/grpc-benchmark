@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<style>
+	body {margin: 0; padding: 10px; background-color: #ffffff}
+	h1 {margin: 5px 0 0 0; font-size: 18px; font-weight: normal; text-align: center}
+	header {margin: -24px 0 5px 0; line-height: 24px}
+	button {font: 12px sans-serif; cursor: pointer}
+	p {margin: 5px 0 5px 0}
+	a {color: #0366d6}
+	#hl {position: absolute; display: none; overflow: hidden; white-space: nowrap; pointer-events: none; background-color: #ffffe0; outline: 1px solid #ffc000; height: 15px}
+	#hl span {padding: 0 3px 0 3px}
+	#status {overflow: hidden; white-space: nowrap}
+	#match {overflow: hidden; white-space: nowrap; display: none; float: right; text-align: right}
+	#reset {cursor: pointer}
+	#canvas {width: 100%; height: 672px}
+</style>
+</head>
+<body style='font: 12px Verdana, sans-serif'>
+<h1>CPU profile</h1>
+<header style='text-align: left'><button id='reverse' title='Reverse'>&#x1f53b;</button>&nbsp;&nbsp;<button id='search' title='Search'>&#x1f50d;</button></header>
+<header style='text-align: right'>Produced by <a href='https://github.com/jvm-profiling-tools/async-profiler'>async-profiler</a></header>
+<canvas id='canvas'></canvas>
+<div id='hl'><span></span></div>
+<p id='match'>Matched: <span id='matchval'></span> <span id='reset' title='Clear'>&#x274c;</span></p>
+<p id='status'>&nbsp;</p>
+<script>
+	// Copyright 2020 Andrei Pangin
+	// Licensed under the Apache License, Version 2.0.
+	'use strict';
+	var root, rootLevel, px, pattern;
+	var reverse = false;
+	const levels = Array(42);
+	for (let h = 0; h < levels.length; h++) {
+		levels[h] = [];
+	}
+
+	const canvas = document.getElementById('canvas');
+	const c = canvas.getContext('2d');
+	const hl = document.getElementById('hl');
+	const status = document.getElementById('status');
+
+	const canvasWidth = canvas.offsetWidth;
+	const canvasHeight = canvas.offsetHeight;
+	canvas.style.width = canvasWidth + 'px';
+	canvas.width = canvasWidth * (devicePixelRatio || 1);
+	canvas.height = canvasHeight * (devicePixelRatio || 1);
+	if (devicePixelRatio) c.scale(devicePixelRatio, devicePixelRatio);
+	c.font = document.body.style.font;
+
+	const palette = [
+		[0xb2e1b2, 20, 20, 20],
+		[0x50e150, 30, 30, 30],
+		[0x50cccc, 30, 30, 30],
+		[0xe15a5a, 30, 40, 40],
+		[0xc8c83c, 30, 30, 10],
+		[0xe17d00, 30, 30,  0],
+		[0xcce880, 20, 20, 20],
+	];
+
+	function getColor(p) {
+		const v = Math.random();
+		return '#' + (p[0] + ((p[1] * v) << 16 | (p[2] * v) << 8 | (p[3] * v))).toString(16);
+	}
+
+	function f(level, left, width, type, title, inln, c1, int) {
+		levels[level].push({left: left, width: width, color: getColor(palette[type]), title: title,
+			details: (int ? ', int=' + int : '') + (c1 ? ', c1=' + c1 : '') + (inln ? ', inln=' + inln : '')
+		});
+	}
+
+	function samples(n) {
+		return n === 1 ? '1 sample' : n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' samples';
+	}
+
+	function pct(a, b) {
+		return a >= b ? '100' : (100 * a / b).toFixed(2);
+	}
+
+	function findFrame(frames, x) {
+		let left = 0;
+		let right = frames.length - 1;
+
+		while (left <= right) {
+			const mid = (left + right) >>> 1;
+			const f = frames[mid];
+
+			if (f.left > x) {
+				right = mid - 1;
+			} else if (f.left + f.width <= x) {
+				left = mid + 1;
+			} else {
+				return f;
+			}
+		}
+
+		if (frames[left] && (frames[left].left - x) * px < 0.5) return frames[left];
+		if (frames[right] && (x - (frames[right].left + frames[right].width)) * px < 0.5) return frames[right];
+
+		return null;
+	}
+
+	function search(r) {
+		if (r === true && (r = prompt('Enter regexp to search:', '')) === null) {
+			return;
+		}
+
+		pattern = r ? RegExp(r) : undefined;
+		const matched = render(root, rootLevel);
+		document.getElementById('matchval').textContent = pct(matched, root.width) + '%';
+		document.getElementById('match').style.display = r ? 'inherit' : 'none';
+	}
+
+	function render(newRoot, newLevel) {
+		if (root) {
+			c.fillStyle = '#ffffff';
+			c.fillRect(0, 0, canvasWidth, canvasHeight);
+		}
+
+		root = newRoot || levels[0][0];
+		rootLevel = newLevel || 0;
+		px = canvasWidth / root.width;
+
+		const x0 = root.left;
+		const x1 = x0 + root.width;
+		const marked = [];
+
+		function mark(f) {
+			return marked[f.left] >= f.width || (marked[f.left] = f.width);
+		}
+
+		function totalMarked() {
+			let total = 0;
+			let left = 0;
+			Object.keys(marked).sort(function(a, b) { return a - b; }).forEach(function(x) {
+				if (+x >= left) {
+					total += marked[x];
+					left = +x + marked[x];
+				}
+			});
+			return total;
+		}
+
+		function drawFrame(f, y, alpha) {
+			if (f.left < x1 && f.left + f.width > x0) {
+				c.fillStyle = pattern && f.title.match(pattern) && mark(f) ? '#ee00ee' : f.color;
+				c.fillRect((f.left - x0) * px, y, f.width * px, 15);
+
+				if (f.width * px >= 21) {
+					const chars = Math.floor(f.width * px / 7);
+					const title = f.title.length <= chars ? f.title : f.title.substring(0, chars - 2) + '..';
+					c.fillStyle = '#000000';
+					c.fillText(title, Math.max(f.left - x0, 0) * px + 3, y + 12, f.width * px - 6);
+				}
+
+				if (alpha) {
+					c.fillStyle = 'rgba(255, 255, 255, 0.5)';
+					c.fillRect((f.left - x0) * px, y, f.width * px, 15);
+				}
+			}
+		}
+
+		for (let h = 0; h < levels.length; h++) {
+			const y = reverse ? h * 16 : canvasHeight - (h + 1) * 16;
+			const frames = levels[h];
+			for (let i = 0; i < frames.length; i++) {
+				drawFrame(frames[i], y, h < rootLevel);
+			}
+		}
+
+		return totalMarked();
+	}
+
+	canvas.onmousemove = function() {
+		const h = Math.floor((reverse ? event.offsetY : (canvasHeight - event.offsetY)) / 16);
+		if (h >= 0 && h < levels.length) {
+			const f = findFrame(levels[h], event.offsetX / px + root.left);
+			if (f) {
+				if (f != root) getSelection().removeAllRanges();
+				hl.style.left = (Math.max(f.left - root.left, 0) * px + canvas.offsetLeft) + 'px';
+				hl.style.width = (Math.min(f.width, root.width) * px) + 'px';
+				hl.style.top = ((reverse ? h * 16 : canvasHeight - (h + 1) * 16) + canvas.offsetTop) + 'px';
+				hl.firstChild.textContent = f.title;
+				hl.style.display = 'block';
+				canvas.title = f.title + '\n(' + samples(f.width) + f.details + ', ' + pct(f.width, levels[0][0].width) + '%)';
+				canvas.style.cursor = 'pointer';
+				canvas.onclick = function() {
+					if (f != root) {
+						render(f, h);
+						canvas.onmousemove();
+					}
+				};
+				status.textContent = 'Function: ' + canvas.title;
+				return;
+			}
+		}
+		canvas.onmouseout();
+	}
+
+	canvas.onmouseout = function() {
+		hl.style.display = 'none';
+		status.textContent = '\xa0';
+		canvas.title = '';
+		canvas.style.cursor = '';
+		canvas.onclick = '';
+	}
+
+	canvas.ondblclick = function() {
+		getSelection().selectAllChildren(hl);
+	}
+
+	document.getElementById('reverse').onclick = function() {
+		reverse = !reverse;
+		render();
+	}
+
+	document.getElementById('search').onclick = function() {
+		search(true);
+	}
+
+	document.getElementById('reset').onclick = function() {
+		search(false);
+	}
+
+	window.onkeydown = function() {
+		if (event.ctrlKey && event.keyCode === 70) {
+			event.preventDefault();
+			search(true);
+		} else if (event.keyCode === 27) {
+			search(false);
+		}
+	}
+
+f(0,0,3028,3,'all')
+f(1,0,1,3,'[not_walkable_Java]')
+f(2,0,1,3,'g1_post_barrier_slow')
+f(3,0,1,4,'G1DirtyCardQueueSet::enqueue(G1DirtyCardQueue&, unsigned char volatile*)')
+f(4,0,1,4,'PtrQueueSet::exchange_buffer_with_new(PtrQueue&)')
+f(5,0,1,4,'BufferNode::Allocator::allocate()')
+f(1,1,2,3,'[unknown]')
+f(2,1,1,3,'do_futex_wait.constprop.0')
+f(3,1,1,5,'entry_SYSCALL_64_after_hwframe')
+f(4,1,1,5,'do_syscall_64')
+f(5,1,1,5,'__x64_sys_futex')
+f(6,1,1,5,'do_futex')
+f(7,1,1,5,'futex_wait')
+f(8,1,1,5,'futex_wait_queue_me')
+f(9,1,1,5,'schedule')
+f(10,1,1,5,'__sched_text_start')
+f(11,1,1,5,'finish_task_switch')
+f(2,2,1,3,'pthread_cond_timedwait@@GLIBC_2.3.2')
+f(1,3,37,3,'[unknown_Java]')
+f(2,3,35,1,'com/fasterxml/jackson/databind/deser/std/MapDeserializer._readAndBindStringKeyMap')
+f(3,37,1,5,'asm_sysvec_call_function_single')
+f(4,37,1,5,'sysvec_call_function_single')
+f(5,37,1,5,'irqentry_exit')
+f(6,37,1,5,'irqentry_exit_to_user_mode')
+f(7,37,1,5,'exit_to_user_mode_prepare')
+f(2,38,2,1,'java/lang/String.hashCode')
+f(1,40,1,3,'__pthread_cond_broadcast')
+f(2,40,1,5,'entry_SYSCALL_64_after_hwframe')
+f(3,40,1,5,'do_syscall_64')
+f(4,40,1,5,'__x64_sys_futex')
+f(5,40,1,5,'do_futex')
+f(6,40,1,5,'futex_wake')
+f(7,40,1,5,'wake_up_q')
+f(8,40,1,5,'try_to_wake_up')
+f(9,40,1,5,'__lock_text_start')
+f(1,41,2978,1,'java/lang/Thread.run')
+f(2,41,2978,1,'java/util/concurrent/ThreadPoolExecutor$Worker.run')
+f(3,41,2978,1,'java/util/concurrent/ThreadPoolExecutor.runWorker')
+f(4,41,2978,1,'java/util/concurrent/FutureTask.run')
+f(5,41,2978,1,'java/util/concurrent/Executors$RunnableAdapter.call')
+f(6,41,2978,1,'java/util/concurrent/FutureTask.run')
+f(7,41,2978,1,'org/openjdk/jmh/runner/BenchmarkHandler$BenchmarkTask.call')
+f(8,41,2978,1,'org/openjdk/jmh/runner/BenchmarkHandler$BenchmarkTask.call')
+f(9,41,2978,1,'java/lang/reflect/Method.invoke')
+f(10,41,2978,1,'jdk/internal/reflect/DelegatingMethodAccessorImpl.invoke')
+f(11,41,2978,1,'jdk/internal/reflect/GeneratedMethodAccessor1.invoke')
+f(12,41,2978,1,'com/grpc/benchmark/scenario/jmh_generated/JsonObjectBenchMark_decode_jmhTest.decode_AverageTime',0,1,0)
+f(13,42,22,1,'com/grpc/benchmark/scenario/JsonObjectBenchMark.decode')
+f(14,42,22,1,'io/vertx/core/json/JsonObject.<init>')
+f(15,42,22,1,'io/vertx/core/json/JsonObject.fromJson',5,0,0)
+f(16,42,22,1,'io/vertx/core/json/jackson/DatabindCodec.fromString',5,0,0)
+f(17,42,6,2,'io/vertx/core/json/jackson/DatabindCodec.createParser',4,0,0)
+f(18,42,6,2,'com/fasterxml/jackson/core/JsonFactory.createParser',4,0,0)
+f(19,42,2,1,'com/fasterxml/jackson/core/JsonFactory._createParser')
+f(20,43,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.<init>',1,0,0)
+f(21,43,1,2,'com/fasterxml/jackson/core/base/ParserBase.<init>',1,0,0)
+f(22,43,1,2,'com/fasterxml/jackson/core/io/IOContext.constructTextBuffer',1,0,0)
+f(19,44,3,2,'com/fasterxml/jackson/core/io/IOContext.allocTokenBuffer',3,0,0)
+f(20,44,3,2,'com/fasterxml/jackson/core/util/BufferRecycler.allocCharBuffer',3,0,0)
+f(21,44,3,2,'java/util/concurrent/atomic/AtomicReferenceArray.getAndSet',3,0,0)
+f(22,44,3,2,'java/lang/invoke/VarHandleGuards.guard_LIL_L',3,0,0)
+f(23,44,3,2,'java/lang/invoke/VarHandleReferences$Array.getAndSet',3,0,0)
+f(19,47,1,2,'java/lang/String.length',1,0,0)
+f(17,48,16,1,'io/vertx/core/json/jackson/DatabindCodec.fromParser',1,0,0)
+f(18,48,1,1,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.nextToken')
+f(19,48,1,2,'com/fasterxml/jackson/core/base/ParserBase.close',1,0,0)
+f(20,48,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._releaseBuffers',1,0,0)
+f(21,48,1,2,'com/fasterxml/jackson/core/io/IOContext.releaseTokenBuffer',1,0,0)
+f(22,48,1,2,'com/fasterxml/jackson/core/util/BufferRecycler.releaseCharBuffer',1,0,0)
+f(23,48,1,2,'java/util/concurrent/atomic/AtomicReferenceArray.set',1,0,0)
+f(24,48,1,2,'java/lang/invoke/VarHandleGuards.guard_LIL_V',1,0,0)
+f(25,48,1,2,'java/lang/invoke/VarHandleReferences$Array.setVolatile',1,0,0)
+f(18,49,14,1,'com/fasterxml/jackson/databind/ObjectMapper.readValue')
+f(19,49,11,1,'com/fasterxml/jackson/databind/ObjectMapper._readValue')
+f(20,49,11,1,'com/fasterxml/jackson/databind/deser/DefaultDeserializationContext.readRootValue')
+f(21,49,11,1,'com/fasterxml/jackson/databind/deser/std/MapDeserializer.deserialize')
+f(22,49,11,1,'com/fasterxml/jackson/databind/deser/std/MapDeserializer.deserialize')
+f(23,49,11,1,'com/fasterxml/jackson/databind/deser/std/MapDeserializer._readAndBindStringKeyMap')
+f(24,49,5,1,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.nextFieldName')
+f(25,49,3,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._parseName',3,0,0)
+f(26,50,2,2,'com/fasterxml/jackson/core/sym/CharsToNameCanonicalizer.findSymbol',2,0,0)
+f(27,51,1,2,'com/fasterxml/jackson/core/sym/CharsToNameCanonicalizer._hashToIndex',1,0,0)
+f(25,52,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._parseUnsignedNumber',1,0,0)
+f(26,52,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._parseFloat',1,0,0)
+f(27,52,1,2,'com/fasterxml/jackson/core/util/TextBuffer.resetWithShared',1,0,0)
+f(25,53,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._skipWSOrEnd',1,0,0)
+f(24,54,4,2,'com/fasterxml/jackson/databind/deser/std/UntypedObjectDeserializerNR.deserialize',2,0,0)
+f(25,54,4,2,'com/fasterxml/jackson/core/base/ParserBase.getNumberValue',2,0,0)
+f(26,56,2,1,'com/fasterxml/jackson/core/base/ParserBase._parseNumericValue')
+f(27,56,2,1,'com/fasterxml/jackson/core/base/ParserBase._parseSlowFloat')
+f(28,56,2,1,'com/fasterxml/jackson/core/util/TextBuffer.contentsAsDouble')
+f(29,56,2,1,'com/fasterxml/jackson/core/io/NumberInput.parseDouble')
+f(30,56,2,1,'java/lang/Double.parseDouble')
+f(31,56,2,1,'jdk/internal/math/FloatingDecimal.parseDouble')
+f(32,56,2,1,'jdk/internal/math/FloatingDecimal$ASCIIToBinaryBuffer.doubleValue')
+f(24,58,2,1,'java/util/HashMap.put')
+f(25,58,1,1,'java/util/HashMap.hash')
+f(26,58,1,1,'java/lang/String.hashCode')
+f(25,59,1,1,'java/util/HashMap.putVal')
+f(26,59,1,1,'java/util/HashMap.resize')
+f(19,60,3,2,'com/fasterxml/jackson/databind/type/TypeFactory.constructType',3,0,0)
+f(20,60,3,2,'com/fasterxml/jackson/databind/type/TypeFactory._fromAny',3,0,0)
+f(21,60,3,2,'com/fasterxml/jackson/databind/type/TypeFactory._fromClass',3,0,0)
+f(22,60,3,2,'com/fasterxml/jackson/databind/util/LRUMap.get',3,0,0)
+f(23,60,3,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.get',3,0,0)
+f(24,60,2,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.afterRead',2,0,0)
+f(25,60,2,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.recordRead',2,0,0)
+f(26,60,2,2,'java/util/concurrent/atomic/AtomicLong.lazySet',2,0,0)
+f(24,62,1,2,'java/util/concurrent/ConcurrentHashMap.get',1,0,0)
+f(18,63,1,2,'io/vertx/core/json/jackson/JacksonCodec.close',1,0,0)
+f(19,63,1,2,'com/fasterxml/jackson/core/base/ParserBase.close',1,0,0)
+f(13,64,2953,1,'com/grpc/benchmark/scenario/jmh_generated/JsonObjectBenchMark_decode_jmhTest.decode_avgt_jmhStub')
+f(14,66,2951,1,'com/grpc/benchmark/scenario/JsonObjectBenchMark.decode',3,0,0)
+f(15,69,2948,1,'io/vertx/core/json/JsonObject.<init>')
+f(16,73,2944,1,'io/vertx/core/json/JsonObject.fromJson',217,0,0)
+f(17,76,2941,1,'io/vertx/core/json/jackson/DatabindCodec.fromString',214,0,0)
+f(18,76,381,2,'io/vertx/core/json/jackson/DatabindCodec.createParser',210,0,0)
+f(19,76,381,2,'com/fasterxml/jackson/core/JsonFactory.createParser',210,0,0)
+f(20,92,7,2,'com/fasterxml/jackson/core/JsonFactory._createContentReference',7,0,0)
+f(21,92,7,2,'com/fasterxml/jackson/core/io/ContentReference.construct',7,0,0)
+f(22,98,1,2,'com/fasterxml/jackson/core/io/ContentReference.<init>',1,0,0)
+f(23,98,1,2,'com/fasterxml/jackson/core/io/ContentReference.<init>',1,0,0)
+f(20,99,36,2,'com/fasterxml/jackson/core/JsonFactory._createContext',36,0,0)
+f(21,103,25,2,'com/fasterxml/jackson/core/JsonFactory._getBufferRecycler',25,0,0)
+f(22,103,25,2,'com/fasterxml/jackson/core/util/BufferRecyclers.getBufferRecycler',25,0,0)
+f(23,106,14,2,'java/lang/ThreadLocal.get',14,0,0)
+f(24,116,4,2,'java/lang/ThreadLocal$ThreadLocalMap.getEntry',4,0,0)
+f(25,119,1,2,'java/lang/ref/Reference.refersTo',1,0,0)
+f(26,119,1,2,'java/lang/ref/Reference.refersToImpl',1,0,0)
+f(23,120,8,2,'java/lang/ref/SoftReference.get',8,0,0)
+f(21,128,7,2,'com/fasterxml/jackson/core/io/IOContext.<init>',7,0,0)
+f(20,135,171,1,'com/fasterxml/jackson/core/JsonFactory._createParser')
+f(21,173,94,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.<init>',93,0,0)
+f(22,197,70,2,'com/fasterxml/jackson/core/base/ParserBase.<init>',69,0,0)
+f(23,202,19,2,'com/fasterxml/jackson/core/io/IOContext.constructTextBuffer',19,0,0)
+f(24,220,1,5,'asm_sysvec_apic_timer_interrupt')
+f(25,220,1,5,'sysvec_apic_timer_interrupt')
+f(26,220,1,5,'irq_exit_rcu')
+f(27,220,1,5,'__softirqentry_text_start')
+f(23,221,46,2,'com/fasterxml/jackson/core/json/JsonReadContext.createRootContext',45,0,0)
+f(24,266,1,4,'OptoRuntime::new_instance_C(Klass*, JavaThread*)')
+f(25,266,1,4,'InstanceKlass::allocate_instance(JavaThread*)')
+f(26,266,1,4,'MemAllocator::allocate() const')
+f(27,266,1,4,'MemAllocator::allocate_inside_tlab_slow(MemAllocator::Allocation&) const')
+f(28,266,1,3,'__memset_avx2_unaligned_erms')
+f(21,267,39,2,'com/fasterxml/jackson/core/sym/CharsToNameCanonicalizer.makeChild',38,0,0)
+f(22,272,1,4,'OptoRuntime::new_instance_C(Klass*, JavaThread*)')
+f(22,273,33,2,'com/fasterxml/jackson/core/sym/CharsToNameCanonicalizer.<init>',33,0,0)
+f(23,305,1,5,'asm_sysvec_call_function_single')
+f(24,305,1,5,'sysvec_call_function_single')
+f(25,305,1,5,'irqentry_exit')
+f(26,305,1,5,'irqentry_exit_to_user_mode')
+f(27,305,1,5,'exit_to_user_mode_prepare')
+f(20,306,57,2,'com/fasterxml/jackson/core/io/IOContext.allocTokenBuffer',57,0,0)
+f(21,312,51,2,'com/fasterxml/jackson/core/util/BufferRecycler.allocCharBuffer',51,0,0)
+f(22,320,43,2,'java/util/concurrent/atomic/AtomicReferenceArray.getAndSet',43,0,0)
+f(23,320,43,2,'java/lang/invoke/VarHandleGuards.guard_LIL_L',43,0,0)
+f(24,320,43,2,'java/lang/invoke/VarHandleReferences$Array.getAndSet',43,0,0)
+f(25,356,1,5,'asm_sysvec_call_function_single')
+f(26,356,1,5,'sysvec_call_function_single')
+f(27,356,1,5,'irqentry_exit')
+f(28,356,1,5,'irqentry_exit_to_user_mode')
+f(29,356,1,5,'exit_to_user_mode_prepare')
+f(25,357,6,2,'java/lang/invoke/VarHandleReferences$Array.runtimeTypeCheck',6,0,0)
+f(20,363,10,2,'java/lang/String.getChars',10,0,0)
+f(21,363,1,2,'java/lang/String.checkBoundsBeginEnd',1,0,0)
+f(21,364,7,2,'java/lang/String.length',7,0,0)
+f(22,365,6,2,'java/lang/String.coder',6,0,0)
+f(21,371,2,2,'java/lang/StringLatin1.getChars',2,0,0)
+f(20,373,84,2,'java/lang/String.length',84,0,0)
+f(18,457,2560,1,'io/vertx/core/json/jackson/DatabindCodec.fromParser',4,0,0)
+f(19,461,219,1,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.nextToken')
+f(20,542,2,5,'asm_sysvec_call_function_single')
+f(21,542,2,5,'sysvec_call_function_single')
+f(22,542,2,5,'irqentry_exit')
+f(23,542,2,5,'irqentry_exit_to_user_mode')
+f(24,542,2,5,'exit_to_user_mode_prepare')
+f(20,544,126,2,'com/fasterxml/jackson/core/base/ParserBase.close',126,0,0)
+f(21,547,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._closeInput',1,0,0)
+f(21,548,122,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._releaseBuffers',122,0,0)
+f(22,553,5,2,'com/fasterxml/jackson/core/base/ParserBase._releaseBuffers',5,0,0)
+f(23,554,4,2,'com/fasterxml/jackson/core/util/TextBuffer.releaseBuffers',4,0,0)
+f(22,558,112,2,'com/fasterxml/jackson/core/io/IOContext.releaseTokenBuffer',112,0,0)
+f(23,562,108,2,'com/fasterxml/jackson/core/util/BufferRecycler.releaseCharBuffer',108,0,0)
+f(24,562,108,2,'java/util/concurrent/atomic/AtomicReferenceArray.set',108,0,0)
+f(25,585,85,2,'java/lang/invoke/VarHandleGuards.guard_LIL_V',85,0,0)
+f(26,585,85,2,'java/lang/invoke/VarHandleReferences$Array.setVolatile',85,0,0)
+f(27,622,48,2,'java/lang/invoke/VarHandleReferences$Array.runtimeTypeCheck',48,0,0)
+f(20,670,8,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._nextAfterName',8,0,0)
+f(20,678,2,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._skipWSOrEnd',2,0,0)
+f(21,678,2,2,'com/fasterxml/jackson/core/base/ParserBase._eofAsNextChar',2,0,0)
+f(22,678,2,2,'com/fasterxml/jackson/core/base/ParserBase._handleEOF',2,0,0)
+f(19,680,2337,1,'com/fasterxml/jackson/databind/ObjectMapper.readValue')
+f(20,685,2073,1,'com/fasterxml/jackson/databind/ObjectMapper._readValue',96,0,0)
+f(21,686,4,2,'com/fasterxml/jackson/core/base/ParserMinimalBase.clearCurrentToken',4,0,0)
+f(21,690,3,2,'com/fasterxml/jackson/databind/DeserializationConfig.isEnabled',3,0,0)
+f(21,693,17,2,'com/fasterxml/jackson/databind/ObjectMapper._findRootDeserializer',17,0,0)
+f(22,699,11,2,'java/util/concurrent/ConcurrentHashMap.get',11,0,0)
+f(23,703,1,2,'com/fasterxml/jackson/databind/JavaType.hashCode',1,0,0)
+f(23,704,1,2,'java/util/concurrent/ConcurrentHashMap.spread',1,0,0)
+f(23,705,5,2,'java/util/concurrent/ConcurrentHashMap.tabAt',5,0,0)
+f(21,710,67,1,'com/fasterxml/jackson/databind/ObjectMapper._initForReading',8,0,0)
+f(22,716,59,1,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.nextToken')
+f(23,724,1,5,'asm_sysvec_call_function_single')
+f(24,724,1,5,'sysvec_call_function_single')
+f(25,724,1,5,'irqentry_exit')
+f(26,724,1,5,'irqentry_exit_to_user_mode')
+f(27,724,1,5,'exit_to_user_mode_prepare')
+f(23,725,1,2,'com/fasterxml/jackson/core/base/ParserBase.close',1,0,0)
+f(24,725,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._closeInput',1,0,0)
+f(23,726,33,2,'com/fasterxml/jackson/core/json/JsonReadContext.createChildObjectContext',26,0,0)
+f(24,751,1,5,'asm_sysvec_call_function_single')
+f(25,751,1,5,'sysvec_call_function_single')
+f(26,751,1,5,'irqentry_exit')
+f(27,751,1,5,'irqentry_exit_to_user_mode')
+f(28,751,1,5,'exit_to_user_mode_prepare')
+f(24,752,7,1,'com/fasterxml/jackson/core/json/JsonReadContext.<init>')
+f(23,759,6,2,'com/fasterxml/jackson/core/json/JsonReadContext.expectComma',6,0,0)
+f(23,765,3,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._nextAfterName',3,0,0)
+f(23,768,3,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._skipWSOrEnd',3,0,0)
+f(23,771,4,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._updateLocation',4,0,0)
+f(22,775,2,2,'com/fasterxml/jackson/databind/DeserializationConfig.initialize',2,0,0)
+f(21,777,30,2,'com/fasterxml/jackson/databind/ObjectMapper.createDeserializationContext',30,0,0)
+f(22,781,26,2,'com/fasterxml/jackson/databind/deser/DefaultDeserializationContext$Impl.createInstance',26,0,0)
+f(23,801,6,2,'com/fasterxml/jackson/databind/deser/DefaultDeserializationContext$Impl.<init>',6,0,0)
+f(24,801,6,2,'com/fasterxml/jackson/databind/deser/DefaultDeserializationContext.<init>',6,0,0)
+f(25,801,6,2,'com/fasterxml/jackson/databind/DeserializationContext.<init>',6,0,0)
+f(21,807,1951,1,'com/fasterxml/jackson/databind/deser/DefaultDeserializationContext.readRootValue',33,0,0)
+f(22,807,1,2,'com/fasterxml/jackson/databind/DeserializationConfig.useRootWrapping',1,0,0)
+f(23,807,1,2,'com/fasterxml/jackson/databind/DeserializationConfig.isEnabled',1,0,0)
+f(22,808,1950,1,'com/fasterxml/jackson/databind/deser/std/MapDeserializer.deserialize',32,0,0)
+f(23,808,1950,1,'com/fasterxml/jackson/databind/deser/std/MapDeserializer.deserialize',32,0,0)
+f(24,816,2,2,'com/fasterxml/jackson/core/base/ParserMinimalBase.currentTokenId',2,0,0)
+f(24,818,22,2,'com/fasterxml/jackson/databind/deser/impl/JDKValueInstantiators$LinkedHashMapInstantiator.createUsingDefault',22,0,0)
+f(25,838,1,5,'asm_sysvec_call_function_single')
+f(26,838,1,5,'sysvec_call_function_single')
+f(27,838,1,5,'irqentry_exit')
+f(28,838,1,5,'irqentry_exit_to_user_mode')
+f(29,838,1,5,'exit_to_user_mode_prepare')
+f(25,839,1,2,'java/util/LinkedHashMap.<init>',1,0,0)
+f(24,840,1918,1,'com/fasterxml/jackson/databind/deser/std/MapDeserializer._readAndBindStringKeyMap')
+f(25,880,1,2,'com/fasterxml/jackson/core/base/ParserMinimalBase.isExpectedStartObjectToken',1,0,0)
+f(25,881,895,1,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.nextFieldName')
+f(26,999,1,5,'asm_sysvec_apic_timer_interrupt')
+f(27,999,1,5,'sysvec_apic_timer_interrupt')
+f(28,999,1,5,'irqentry_exit')
+f(29,999,1,5,'irqentry_exit_to_user_mode')
+f(30,999,1,5,'exit_to_user_mode_prepare')
+f(26,1000,1,5,'asm_sysvec_call_function_single')
+f(27,1000,1,5,'sysvec_call_function_single')
+f(28,1000,1,5,'irqentry_exit')
+f(29,1000,1,5,'irqentry_exit_to_user_mode')
+f(30,1000,1,5,'exit_to_user_mode_prepare')
+f(26,1001,5,2,'com/fasterxml/jackson/core/JsonStreamContext.inObject',5,0,0)
+f(26,1006,45,2,'com/fasterxml/jackson/core/json/JsonReadContext.expectComma',45,0,0)
+f(26,1051,22,2,'com/fasterxml/jackson/core/json/JsonReadContext.setCurrentName',22,0,0)
+f(26,1073,4,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._closeScope',4,0,0)
+f(27,1074,1,2,'com/fasterxml/jackson/core/json/JsonReadContext.clearAndGetParent',1,0,0)
+f(27,1075,2,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._updateLocation',2,0,0)
+f(26,1077,15,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._matchTrue',15,0,0)
+f(26,1092,513,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._parseName',513,0,0)
+f(27,1316,1,5,'asm_sysvec_call_function_single')
+f(28,1316,1,5,'sysvec_call_function_single')
+f(29,1316,1,5,'irqentry_exit')
+f(30,1316,1,5,'irqentry_exit_to_user_mode')
+f(31,1316,1,5,'exit_to_user_mode_prepare')
+f(27,1317,288,2,'com/fasterxml/jackson/core/sym/CharsToNameCanonicalizer.findSymbol',288,0,0)
+f(28,1499,2,5,'asm_sysvec_call_function_single')
+f(29,1499,2,5,'sysvec_call_function_single')
+f(30,1499,2,5,'irqentry_exit')
+f(31,1499,2,5,'irqentry_exit_to_user_mode')
+f(32,1499,2,5,'exit_to_user_mode_prepare')
+f(28,1501,38,2,'com/fasterxml/jackson/core/sym/CharsToNameCanonicalizer._hashToIndex',38,0,0)
+f(29,1538,1,5,'asm_sysvec_apic_timer_interrupt')
+f(30,1538,1,5,'sysvec_apic_timer_interrupt')
+f(31,1538,1,5,'irq_exit_rcu')
+f(32,1538,1,5,'__softirqentry_text_start')
+f(33,1538,1,5,'run_timer_softirq')
+f(34,1538,1,5,'call_timer_fn')
+f(35,1538,1,5,'io_watchdog_func')
+f(36,1538,1,5,'__lock_text_start')
+f(28,1539,22,2,'java/lang/String.charAt',22,0,0)
+f(29,1541,20,2,'java/lang/StringLatin1.charAt',20,0,0)
+f(28,1561,44,2,'java/lang/String.length',44,0,0)
+f(29,1600,5,2,'java/lang/String.coder',5,0,0)
+f(26,1605,54,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._parseUnsignedNumber',54,0,0)
+f(27,1630,1,2,'com/fasterxml/jackson/core/base/ParserBase.resetInt',1,0,0)
+f(27,1631,22,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._parseFloat',22,0,0)
+f(28,1645,1,2,'com/fasterxml/jackson/core/base/ParserBase.resetFloat',1,0,0)
+f(28,1646,7,2,'com/fasterxml/jackson/core/util/TextBuffer.resetWithShared',7,0,0)
+f(27,1653,6,2,'com/fasterxml/jackson/core/util/TextBuffer.resetWithShared',6,0,0)
+f(26,1659,33,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._skipColon',33,0,0)
+f(27,1691,1,5,'asm_sysvec_call_function_single')
+f(28,1691,1,5,'sysvec_call_function_single')
+f(29,1691,1,5,'irqentry_exit')
+f(30,1691,1,5,'irqentry_exit_to_user_mode')
+f(31,1691,1,5,'exit_to_user_mode_prepare')
+f(26,1692,17,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._skipComma',17,0,0)
+f(26,1709,40,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._skipWSOrEnd',40,0,0)
+f(27,1748,1,5,'asm_sysvec_call_function_single')
+f(28,1748,1,5,'sysvec_call_function_single')
+f(29,1748,1,5,'irqentry_exit')
+f(30,1748,1,5,'irqentry_exit_to_user_mode')
+f(31,1748,1,5,'exit_to_user_mode_prepare')
+f(26,1749,24,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._updateLocation',24,0,0)
+f(26,1773,3,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._updateNameLocation',3,0,0)
+f(25,1776,38,1,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.nextToken')
+f(26,1795,18,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._nextAfterName',18,0,0)
+f(26,1813,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._skipWSOrEnd',1,0,0)
+f(27,1813,1,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._loadMore',1,0,0)
+f(25,1814,4,6,'com/fasterxml/jackson/databind/JsonDeserializer.getObjectIdReader',0,4,0)
+f(25,1818,486,2,'com/fasterxml/jackson/databind/deser/std/UntypedObjectDeserializerNR.deserialize',355,0,0)
+f(26,1818,344,2,'com/fasterxml/jackson/core/base/ParserBase.getNumberValue',213,0,0)
+f(27,1971,4,4,'OptoRuntime::new_array_nozero_C(Klass*, int, JavaThread*)')
+f(28,1971,3,4,'OptoRuntime::is_deoptimized_caller_frame(JavaThread*)')
+f(29,1972,2,4,'frame::sender(RegisterMap*) const')
+f(30,1972,1,4,'VMError::is_error_reported()')
+f(30,1973,1,4,'frame::sender_for_compiled_frame(RegisterMap*) const')
+f(31,1973,1,4,'OopMapSet::update_register_map(frame const*, RegisterMap*)')
+f(32,1973,1,4,'ImmutableOopMapSet::find_map_at_offset(int) const')
+f(28,1974,1,4,'TypeArrayKlass::allocate_common(int, bool, JavaThread*)')
+f(29,1974,1,4,'MemAllocator::allocate() const')
+f(30,1974,1,4,'MemAllocator::allocate_inside_tlab_slow(MemAllocator::Allocation&) const')
+f(31,1974,1,4,'G1CollectedHeap::allocate_new_tlab(unsigned long, unsigned long, unsigned long*)')
+f(32,1974,1,4,'G1CollectedHeap::attempt_allocation_slow(unsigned long)')
+f(33,1974,1,4,'G1AllocRegion::new_alloc_region_and_allocate(unsigned long, bool)')
+f(34,1974,1,4,'G1CollectedHeap::new_mutator_alloc_region(unsigned long, bool, unsigned int)')
+f(35,1974,1,4,'G1CollectedHeap::new_region(unsigned long, HeapRegionType, bool, unsigned int)')
+f(36,1974,1,4,'HeapRegionManager::allocate_free_region(HeapRegionType, unsigned int)')
+f(37,1974,1,5,'asm_sysvec_call_function_single')
+f(38,1974,1,5,'sysvec_call_function_single')
+f(39,1974,1,5,'irqentry_exit')
+f(40,1974,1,5,'irqentry_exit_to_user_mode')
+f(41,1974,1,5,'exit_to_user_mode_prepare')
+f(27,1975,1,3,'__pthread_cond_broadcast')
+f(28,1975,1,5,'entry_SYSCALL_64_after_hwframe')
+f(29,1975,1,5,'do_syscall_64')
+f(30,1975,1,5,'__x64_sys_futex')
+f(31,1975,1,5,'do_futex')
+f(32,1975,1,5,'futex_wake')
+f(33,1975,1,5,'wake_up_q')
+f(34,1975,1,5,'try_to_wake_up')
+f(35,1975,1,5,'__lock_text_start')
+f(27,1976,1,5,'asm_sysvec_call_function_single')
+f(28,1976,1,5,'sysvec_call_function_single')
+f(29,1976,1,5,'irqentry_exit')
+f(30,1976,1,5,'irqentry_exit_to_user_mode')
+f(31,1976,1,5,'exit_to_user_mode_prepare')
+f(32,1976,1,5,'schedule')
+f(33,1976,1,5,'__sched_text_start')
+f(34,1976,1,5,'finish_task_switch')
+f(27,1977,184,1,'com/fasterxml/jackson/core/base/ParserBase._parseNumericValue',58,0,0)
+f(28,1982,179,1,'com/fasterxml/jackson/core/base/ParserBase._parseSlowFloat',53,0,0)
+f(29,1982,179,1,'com/fasterxml/jackson/core/util/TextBuffer.contentsAsDouble',53,0,0)
+f(30,1982,130,1,'com/fasterxml/jackson/core/io/NumberInput.parseDouble',4,0,0)
+f(31,1982,130,1,'java/lang/Double.parseDouble',4,0,0)
+f(32,1982,130,1,'jdk/internal/math/FloatingDecimal.parseDouble',4,0,0)
+f(33,1986,56,1,'jdk/internal/math/FloatingDecimal$ASCIIToBinaryBuffer.doubleValue')
+f(34,2041,1,5,'asm_sysvec_call_function_single')
+f(35,2041,1,5,'sysvec_call_function_single')
+f(36,2041,1,5,'irqentry_exit')
+f(37,2041,1,5,'irqentry_exit_to_user_mode')
+f(38,2041,1,5,'exit_to_user_mode_prepare')
+f(33,2042,70,1,'jdk/internal/math/FloatingDecimal.readJavaFormatString')
+f(34,2098,1,5,'asm_sysvec_apic_timer_interrupt')
+f(35,2098,1,5,'sysvec_apic_timer_interrupt')
+f(36,2098,1,5,'irqentry_exit')
+f(37,2098,1,5,'irqentry_exit_to_user_mode')
+f(38,2098,1,5,'exit_to_user_mode_prepare')
+f(34,2099,3,2,'java/lang/String.charAt',3,0,0)
+f(35,2099,3,2,'java/lang/StringLatin1.charAt',3,0,0)
+f(34,2102,8,2,'java/lang/String.trim',8,0,0)
+f(35,2106,4,2,'java/lang/StringLatin1.trim',4,0,0)
+f(34,2110,2,2,'jdk/internal/math/FloatingDecimal$ASCIIToBinaryBuffer.<init>',2,0,0)
+f(30,2112,49,2,'com/fasterxml/jackson/core/util/TextBuffer.contentsAsString',49,0,0)
+f(31,2132,29,2,'java/lang/String.<init>',29,0,0)
+f(32,2132,29,2,'java/lang/String.<init>',29,0,0)
+f(33,2156,5,2,'java/lang/StringUTF16.compress',5,0,0)
+f(27,2161,1,2,'java/lang/Double.valueOf',1,0,0)
+f(26,2162,10,2,'com/fasterxml/jackson/core/base/ParserMinimalBase.currentTokenId',10,0,0)
+f(26,2172,131,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser.getText',131,0,0)
+f(27,2173,37,2,'com/fasterxml/jackson/core/json/ReaderBasedJsonParser._finishString',37,0,0)
+f(28,2202,8,2,'com/fasterxml/jackson/core/util/TextBuffer.resetWithShared',8,0,0)
+f(27,2210,93,2,'com/fasterxml/jackson/core/util/TextBuffer.contentsAsString',93,0,0)
+f(28,2218,85,2,'java/lang/String.<init>',85,0,0)
+f(29,2218,85,2,'java/lang/String.<init>',85,0,0)
+f(30,2218,85,2,'java/lang/StringUTF16.compress',85,0,0)
+f(26,2303,1,2,'com/fasterxml/jackson/databind/DeserializationContext.isEnabled',1,0,0)
+f(25,2304,454,1,'java/util/HashMap.put')
+f(26,2322,76,2,'java/util/HashMap.hash',35,0,0)
+f(27,2356,1,5,'asm_sysvec_call_function_single')
+f(28,2356,1,5,'sysvec_call_function_single')
+f(29,2356,1,5,'irqentry_exit')
+f(30,2356,1,5,'irqentry_exit_to_user_mode')
+f(31,2356,1,5,'exit_to_user_mode_prepare')
+f(27,2357,22,1,'java/lang/String.hashCode')
+f(27,2379,19,3,'vtable stub')
+f(26,2398,360,2,'java/util/HashMap.putVal',184,0,0)
+f(27,2491,1,5,'asm_sysvec_apic_timer_interrupt')
+f(28,2491,1,5,'sysvec_apic_timer_interrupt')
+f(29,2491,1,5,'irq_exit_rcu')
+f(30,2491,1,5,'__softirqentry_text_start')
+f(27,2492,11,2,'java/util/HashMap.newNode',11,0,0)
+f(28,2492,11,2,'java/util/HashMap$Node.<init>',11,0,0)
+f(27,2503,174,1,'java/util/HashMap.resize')
+f(28,2676,1,5,'asm_sysvec_call_function_single')
+f(29,2676,1,5,'sysvec_call_function_single')
+f(30,2676,1,5,'irqentry_exit')
+f(31,2676,1,5,'irqentry_exit_to_user_mode')
+f(32,2676,1,5,'exit_to_user_mode_prepare')
+f(27,2677,1,2,'java/util/LinkedHashMap.afterNodeInsertion',1,0,0)
+f(27,2678,80,2,'java/util/LinkedHashMap.newNode',78,0,0)
+f(28,2697,3,2,'java/util/LinkedHashMap$Entry.<init>',3,0,0)
+f(29,2697,3,2,'java/util/HashMap$Node.<init>',3,0,0)
+f(28,2700,58,2,'java/util/LinkedHashMap.linkNodeLast',56,0,0)
+f(29,2756,1,4,'OptoRuntime::new_instance_C(Klass*, JavaThread*)')
+f(30,2756,1,4,'InstanceKlass::allocate_instance(JavaThread*)')
+f(31,2756,1,4,'MemAllocator::allocate() const')
+f(32,2756,1,4,'MemAllocator::allocate_inside_tlab_slow(MemAllocator::Allocation&) const')
+f(33,2756,1,4,'G1CollectedHeap::allocate_new_tlab(unsigned long, unsigned long, unsigned long*)')
+f(34,2756,1,4,'G1CollectedHeap::attempt_allocation_slow(unsigned long)')
+f(29,2757,1,4,'ThreadSafepointState::handle_polling_page_exception()')
+f(30,2757,1,4,'CompiledMethod::is_at_poll_return(unsigned char*)')
+f(31,2757,1,4,'RelocIterator::initialize(CompiledMethod*, unsigned char*, unsigned char*)')
+f(20,2758,259,2,'com/fasterxml/jackson/databind/type/TypeFactory.constructType',212,0,0)
+f(21,2758,259,2,'com/fasterxml/jackson/databind/type/TypeFactory._fromAny',212,0,0)
+f(22,2758,259,2,'com/fasterxml/jackson/databind/type/TypeFactory._fromClass',212,0,0)
+f(23,2760,1,2,'com/fasterxml/jackson/databind/type/TypeBindings.isEmpty',1,0,0)
+f(23,2761,1,2,'com/fasterxml/jackson/databind/type/TypeFactory._findWellKnownSimple',1,0,0)
+f(23,2762,255,2,'com/fasterxml/jackson/databind/util/LRUMap.get',208,0,0)
+f(24,2762,255,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.get',208,0,0)
+f(25,2768,221,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.afterRead',177,0,0)
+f(26,2768,62,1,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.drainOnReadIfNeeded',18,0,0)
+f(27,2782,46,1,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.tryToDrainBuffers',2,0,0)
+f(28,2784,43,1,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.drainBuffers')
+f(29,2784,43,1,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.drainReadBuffers')
+f(30,2801,26,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.drainReadBuffer',26,0,0)
+f(31,2810,1,5,'asm_sysvec_call_function_single')
+f(32,2810,1,5,'sysvec_call_function_single')
+f(33,2810,1,5,'irqentry_exit')
+f(34,2810,1,5,'irqentry_exit_to_user_mode')
+f(35,2810,1,5,'exit_to_user_mode_prepare')
+f(31,2811,11,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.applyRead',11,0,0)
+f(32,2813,1,5,'asm_sysvec_call_function_single')
+f(33,2813,1,5,'sysvec_call_function_single')
+f(34,2813,1,5,'irqentry_exit')
+f(35,2813,1,5,'irqentry_exit_to_user_mode')
+f(36,2813,1,5,'exit_to_user_mode_prepare')
+f(32,2814,8,2,'com/fasterxml/jackson/databind/util/internal/LinkedDeque.contains',8,0,0)
+f(31,2822,1,2,'java/util/concurrent/atomic/AtomicLong.get',1,0,0)
+f(31,2823,1,2,'java/util/concurrent/atomic/AtomicReference.get',1,0,0)
+f(31,2824,3,2,'java/util/concurrent/atomic/AtomicReference.lazySet',3,0,0)
+f(32,2824,3,2,'java/lang/invoke/VarHandleGuards.guard_LL_V',3,0,0)
+f(33,2824,3,2,'java/lang/invoke/VarHandleReferences$FieldInstanceReadWrite.setRelease',3,0,0)
+f(28,2827,1,1,'java/util/concurrent/locks/ReentrantLock.tryLock')
+f(29,2827,1,1,'java/util/concurrent/locks/ReentrantLock$Sync.tryLock')
+f(30,2827,1,2,'java/util/concurrent/locks/AbstractQueuedSynchronizer.compareAndSetState',1,0,0)
+f(27,2828,2,2,'java/util/concurrent/atomic/AtomicLong.get',2,0,0)
+f(26,2830,2,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.notifyListener',2,0,0)
+f(26,2832,157,2,'com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.recordRead',157,0,0)
+f(27,2846,132,2,'java/util/concurrent/atomic/AtomicLong.lazySet',132,0,0)
+f(28,2976,2,5,'asm_sysvec_call_function_single')
+f(29,2976,2,5,'sysvec_call_function_single')
+f(30,2976,2,5,'irqentry_exit')
+f(31,2976,2,5,'irqentry_exit_to_user_mode')
+f(32,2976,2,5,'exit_to_user_mode_prepare')
+f(27,2978,11,2,'java/util/concurrent/atomic/AtomicReference.lazySet',11,0,0)
+f(28,2978,11,2,'java/lang/invoke/VarHandleGuards.guard_LL_V',11,0,0)
+f(29,2978,11,2,'java/lang/invoke/VarHandleReferences$FieldInstanceReadWrite.setRelease',11,0,0)
+f(25,2989,28,2,'java/util/concurrent/ConcurrentHashMap.get',25,0,0)
+f(26,3007,2,4,'OptoRuntime::new_instance_C(Klass*, JavaThread*)')
+f(27,3007,2,4,'InstanceKlass::allocate_instance(JavaThread*)')
+f(28,3007,2,4,'MemAllocator::allocate() const')
+f(29,3007,2,4,'MemAllocator::allocate_inside_tlab_slow(MemAllocator::Allocation&) const')
+f(30,3007,2,4,'G1CollectedHeap::allocate_new_tlab(unsigned long, unsigned long, unsigned long*)')
+f(31,3007,2,4,'G1CollectedHeap::attempt_allocation_slow(unsigned long)')
+f(32,3007,1,4,'G1AllocRegion::new_alloc_region_and_allocate(unsigned long, bool)')
+f(33,3007,1,4,'G1CollectedHeap::new_mutator_alloc_region(unsigned long, bool, unsigned int)')
+f(34,3007,1,4,'G1RemSetTrackingPolicy::update_at_allocate(HeapRegion*)')
+f(35,3007,1,4,'G1FromCardCache::clear(unsigned int)')
+f(32,3008,1,4,'MutatorAllocRegion::retire(bool)')
+f(33,3008,1,4,'G1CollectedHeap::retire_mutator_alloc_region(HeapRegion*, unsigned long)')
+f(34,3008,1,4,'OtherRegionsTable::occupied() const')
+f(26,3009,1,3,'__pthread_cond_broadcast')
+f(27,3009,1,5,'entry_SYSCALL_64_after_hwframe')
+f(28,3009,1,5,'do_syscall_64')
+f(29,3009,1,5,'__x64_sys_futex')
+f(30,3009,1,5,'do_futex')
+f(31,3009,1,5,'futex_wake')
+f(32,3009,1,5,'wake_up_q')
+f(33,3009,1,5,'try_to_wake_up')
+f(34,3009,1,5,'__lock_text_start')
+f(26,3010,1,5,'asm_sysvec_call_function_single')
+f(27,3010,1,5,'sysvec_call_function_single')
+f(28,3010,1,5,'irqentry_exit')
+f(29,3010,1,5,'irqentry_exit_to_user_mode')
+f(30,3010,1,5,'exit_to_user_mode_prepare')
+f(26,3011,1,2,'java/util/concurrent/ConcurrentHashMap.spread',1,0,0)
+f(27,3011,1,5,'asm_sysvec_call_function_single')
+f(28,3011,1,5,'sysvec_call_function_single')
+f(29,3011,1,5,'irqentry_exit')
+f(30,3011,1,5,'irqentry_exit_to_user_mode')
+f(31,3011,1,5,'exit_to_user_mode_prepare')
+f(26,3012,5,2,'java/util/concurrent/ConcurrentHashMap.tabAt',5,0,0)
+f(13,3017,1,0,'java/util/concurrent/atomic/AtomicIntegerFieldUpdater$AtomicIntegerFieldUpdaterImpl.set',0,0,1)
+f(13,3018,1,1,'org/openjdk/jmh/results/AverageTimeResult.<init>')
+f(14,3018,1,4,'SharedRuntime::resolve_opt_virtual_call_C(JavaThread*)')
+f(15,3018,1,4,'SharedRuntime::resolve_helper(bool, bool, JavaThread*)')
+f(16,3018,1,4,'SharedRuntime::resolve_sub_helper(bool, bool, JavaThread*)')
+f(17,3018,1,4,'SharedRuntime::find_callee_info_helper(vframeStream&, Bytecodes::Code&, CallInfo&, JavaThread*)')
+f(18,3018,1,4,'Bytecode_invoke::static_target(JavaThread*)')
+f(19,3018,1,4,'LinkResolver::resolve_method_statically(Bytecodes::Code, constantPoolHandle const&, int, JavaThread*)')
+f(20,3018,1,4,'LinkResolver::resolve_method(LinkInfo const&, Bytecodes::Code, JavaThread*)')
+f(21,3018,1,4,'LinkResolver::check_method_loader_constraints(LinkInfo const&, methodHandle const&, char const*, JavaThread*)')
+f(22,3018,1,4,'SystemDictionary::check_signature_loaders(Symbol*, Klass*, Handle, Handle, bool)')
+f(23,3018,1,3,'__pthread_mutex_unlock')
+f(24,3018,1,5,'entry_SYSCALL_64_after_hwframe')
+f(25,3018,1,5,'do_syscall_64')
+f(26,3018,1,5,'__x64_sys_futex')
+f(27,3018,1,5,'do_futex')
+f(28,3018,1,5,'futex_wake')
+f(29,3018,1,5,'wake_up_q')
+f(30,3018,1,5,'try_to_wake_up')
+f(31,3018,1,5,'__lock_text_start')
+f(1,3019,9,3,'start_thread')
+f(2,3019,9,3,'thread_native_entry(Thread*)')
+f(3,3019,9,4,'Thread::call_run()')
+f(4,3019,7,4,'GangWorker::run()')
+f(5,3019,7,4,'GangWorker::loop()')
+f(6,3019,2,4,'G1BatchedGangTask::work(unsigned int)')
+f(7,3019,2,4,'G1RemSetScanState::G1ClearCardTableTask::do_work(unsigned int)')
+f(8,3019,2,3,'__memset_avx2_unaligned_erms')
+f(6,3021,2,4,'G1EvacuateRegionsBaseTask::work(unsigned int)')
+f(7,3021,2,4,'G1EvacuateRegionsTask::evacuate_live_objects(G1ParScanThreadState*, unsigned int)')
+f(8,3021,2,4,'G1ParEvacuateFollowersClosure::do_void()')
+f(9,3021,2,3,'SpinPause')
+f(6,3023,1,4,'G1PrepareEvacuationTask::work(unsigned int)')
+f(7,3023,1,4,'HeapRegionManager::par_iterate(HeapRegionClosure*, HeapRegionClaimer*, unsigned int) const')
+f(6,3024,2,3,'sem_post@@GLIBC_2.2.5')
+f(7,3024,2,5,'entry_SYSCALL_64_after_hwframe')
+f(8,3024,2,5,'do_syscall_64')
+f(9,3024,2,5,'__x64_sys_futex')
+f(10,3024,2,5,'do_futex')
+f(11,3024,2,5,'futex_wake')
+f(12,3024,2,5,'wake_up_q')
+f(13,3024,2,5,'try_to_wake_up')
+f(14,3024,2,5,'__lock_text_start')
+f(4,3026,1,4,'JavaThread::thread_main_inner()')
+f(5,3026,1,4,'CompileBroker::compiler_thread_loop()')
+f(6,3026,1,4,'CompileBroker::invoke_compiler_on_method(CompileTask*)')
+f(7,3026,1,4,'C2Compiler::compile_method(ciEnv*, ciMethod*, int, bool, DirectiveSet*)')
+f(8,3026,1,4,'Compile::Compile(ciEnv*, ciMethod*, int, bool, bool, bool, bool, bool, DirectiveSet*)')
+f(9,3026,1,4,'Compile::Code_Gen()')
+f(10,3026,1,4,'Matcher::match()')
+f(11,3026,1,4,'Matcher::find_shared(Node*)')
+f(12,3026,1,4,'Matcher::find_shared_visit(Matcher::MStack&, Node*, unsigned int, bool&, int&)')
+f(4,3027,1,4,'VMThread::run()')
+f(5,3027,1,4,'VMThread::inner_execute(VM_Operation*)')
+f(6,3027,1,4,'VMThread::evaluate_operation(VM_Operation*)')
+f(7,3027,1,4,'VM_Operation::evaluate()')
+f(8,3027,1,4,'VM_G1CollectForAllocation::doit()')
+f(9,3027,1,4,'G1CollectedHeap::do_collection_pause_at_safepoint(double)')
+f(10,3027,1,4,'G1CollectedHeap::do_collection_pause_at_safepoint_helper(double)')
+f(11,3027,1,4,'G1CollectedHeap::evacuate_initial_collection_set(G1ParScanThreadStateSet*, bool)')
+f(12,3027,1,4,'G1RemSet::merge_heap_roots(bool)')
+f(13,3027,1,4,'WorkGang::run_task(AbstractGangTask*, unsigned int, bool)')
+f(14,3027,1,3,'sem_post@@GLIBC_2.2.5')
+f(15,3027,1,5,'entry_SYSCALL_64_after_hwframe')
+f(16,3027,1,5,'do_syscall_64')
+f(17,3027,1,5,'__x64_sys_futex')
+f(18,3027,1,5,'do_futex')
+f(19,3027,1,5,'futex_wake')
+f(20,3027,1,5,'wake_up_q')
+f(21,3027,1,5,'try_to_wake_up')
+f(22,3027,1,5,'__lock_text_start')
+
+search();
+</script></body></html>
