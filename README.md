@@ -66,5 +66,30 @@ ProtoWrapperBenchMark.encode:async  avgt         NaN            ---
 
 ## Profiling results
 
-### JsonBenchmark Decode
+### JsonBenchmark
+#### Decode
 [![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.JsonBenchMark.decode-AverageTime/flame-cpu-forward.html)
+
+#### Encode
+[![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.JsonBenchMark.encode-AverageTime/flame-cpu-forward.html)
+
+### JsonObjectBenchmark 
+#### Decode
+[![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.JsonObjectBenchMark.decode-AverageTime/flame-cpu-forward.html)
+
+#### Encode
+[![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.JsonObjectBenchMark.encode-AverageTime/flame-cpu-forward.html)
+
+### ProtoBenchMark
+#### Decode
+[![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.ProtoBenchMark.decode-AverageTime/flame-cpu-forward.html)
+
+#### Encode
+[![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.ProtoBenchMark.encode-AverageTime/flame-cpu-forward.html)
+
+### ProtoWrapperBenchMark
+#### Decode
+[![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.ProtoWrapperBenchMark.decode-AverageTime/flame-cpu-forward.html)
+
+#### Encode
+[![Diagram](https://github.com/JckHoe/grpc-benchmark/blob/main/results/example.png)](https://htmlpreview.github.io/?https://github.com/JckHoe/grpc-benchmark/blob/main/results/com.grpc.benchmark.scenario.ProtoWrapperBenchMark.encode-AverageTime/flame-cpu-forward.html)
